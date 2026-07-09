@@ -1,29 +1,57 @@
 "use strict";
-/* App del sitio: descifra datos.json en el navegador y renderiza las secciones.
-   La app es estática y estable; lo único que cambia entre corridas es datos.json
-   (blob AES-256-GCM) y meta.json (timestamp para detectar versiones nuevas). */
+/* Mercado AR — dashboard. Descifra datos.json en el navegador y renderiza:
+   Mi cartera (IOL) · Mis inversiones · Mercado (EOD/MEP) · Salud de datos.
+   La app es estática; entre corridas sólo cambian datos.json y meta.json. */
 
-let CFG = null;                     // {salt, iv, iter, generado} desde datos.json
-let BLOB = null;                    // ciphertext base64 desde datos.json
-let D = null;                       // payload descifrado
-let vista = "resumen";
-let rango = 365;                    // días visibles (null = todo)
-let simboloSel = null, modoSerie = "a", modoPrecios = "c";
+let CFG = null, BLOB = null, D = null;
+let vista = "cartera";
+let rangoCartera = 365, rangoVelas = 183;
+let simboloVelas = null, modoVelas = "c";
 
-/* ---------- utilidades ---------- */
+/* ---------- utilidades y formato (es-AR, números en Plex Mono) ---------- */
 const $ = s => document.querySelector(s);
 const b64a = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const ab64 = b => btoa(String.fromCharCode(...new Uint8Array(b)));
 const diaAFecha = d => new Date(d * 86400000);
-const isoDia = d => diaAFecha(d).toISOString().slice(0,10);
 const fmtFecha = d => diaAFecha(d).toLocaleDateString("es-AR",{day:"2-digit",month:"short",year:"2-digit",timeZone:"UTC"});
-const fmtNum = (v,dec) => v.toLocaleString("es-AR",{minimumFractionDigits:dec??(v<100?2:0),maximumFractionDigits:dec??(v<100?2:0)});
-const fmtPct = v => (v>0?"+":"") + v.toLocaleString("es-AR",{minimumFractionDigits:1,maximumFractionDigits:1}) + "%";
+const fmtFechaLarga = d => diaAFecha(d).toLocaleDateString("es-AR",{day:"2-digit",month:"long",year:"numeric",timeZone:"UTC"});
+const fmtNum = (v,dec) => v.toLocaleString("es-AR",{minimumFractionDigits:dec??(Math.abs(v)<100?2:0),maximumFractionDigits:dec??(Math.abs(v)<100?2:0)});
+const fmtPesos = (v,dec) => "$ " + fmtNum(v,dec);
+const fmtPct = (v,dec=2) => (v>0?"+":"") + v.toLocaleString("es-AR",{minimumFractionDigits:dec,maximumFractionDigits:dec}) + "%";
+const fmtVol = v => v>=1e9 ? fmtNum(v/1e9,1)+" B" : v>=1e6 ? fmtNum(v/1e6,1)+" M" : v>=1e3 ? fmtNum(v/1e3,1)+" K" : fmtNum(v,0);
+const flecha = v => v>=0 ? "▲ " : "▼ ";
 function el(tag, attrs, texto){ const e=document.createElement(tag);
   for(const k in attrs||{}) e.setAttribute(k,attrs[k]);
   if(texto!=null) e.textContent=texto; return e; }
+const NS = n => document.createElementNS("http://www.w3.org/2000/svg", n);
+function svgEl(n, attrs){ const e = NS(n); for(const k in attrs||{}) e.setAttribute(k, attrs[k]); return e; }
 
-/* ---------- datos cifrados (datos.json) ---------- */
+const NOMBRES = {
+  GGAL:"Grupo Galicia", YPFD:"YPF", PAMP:"Pampa Energía", ALUA:"Aluar",
+  TXAR:"Ternium Argentina", BMA:"Banco Macro", CEPU:"Central Puerto",
+  COME:"Comercial del Plata", CRES:"Cresud", EDN:"Edenor",
+  TGSU2:"Transp. Gas del Sur", TGNO4:"Transp. Gas del Norte", LOMA:"Loma Negra",
+  MIRG:"Mirgor", SUPV:"Supervielle", TRAN:"Transener", VALO:"Grupo Fin. Valores",
+  BYMA:"BYMA", CVH:"Cablevisión Holding",
+  AL30:"Bonar 2030 USD", AL30D:"Bonar 2030 (D)", GD30:"Global 2030 USD", GD30D:"Global 2030 (D)",
+  AAPL:"Apple (CEDEAR)", MSFT:"Microsoft (CEDEAR)", GOOGL:"Alphabet (CEDEAR)",
+  NVDA:"NVIDIA (CEDEAR)", TSLA:"Tesla (CEDEAR)", KO:"Coca-Cola (CEDEAR)",
+};
+const nombreDe = s => NOMBRES[s] || "";
+const PALETA_DONA = ["var(--accent)","#4f8ef7","#e6b455","#b48ef7","#f0685a","#5ad4e6","#f18fc2","#9db07f","#8a93a6"];
+
+/* ---------- tema claro/oscuro ---------- */
+function aplicarTema(t){
+  if(t === "light") document.documentElement.setAttribute("data-theme","light");
+  else document.documentElement.removeAttribute("data-theme");
+  localStorage.setItem("tema", t);
+  const lbl = $("#lblTema"); if(lbl) lbl.textContent = t === "light" ? "Modo oscuro" : "Modo claro";
+}
+$("#btnTema").addEventListener("click", () => {
+  aplicarTema(document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light");
+});
+
+/* ---------- datos cifrados ---------- */
 const datosListos = (async () => {
   const r = await fetch("datos.json", {cache:"no-store"});
   if(!r.ok) throw new Error("datos.json: HTTP " + r.status);
@@ -32,11 +60,9 @@ const datosListos = (async () => {
   BLOB = j.blob;
 })();
 datosListos.catch(() => {
-  $("#loginError").textContent =
-    "No se pudieron cargar los datos. La página necesita servirse por http (no file://).";
+  $("#loginError").textContent = "No se pudieron cargar los datos (la página necesita servirse por http).";
 });
 
-/* ---------- login / cifrado ---------- */
 async function derivarClave(pass){
   const km = await crypto.subtle.importKey("raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
   return crypto.subtle.deriveKey({name:"PBKDF2", salt:b64a(CFG.salt), iterations:CFG.iter, hash:"SHA-256"},
@@ -60,13 +86,10 @@ $("#formLogin").addEventListener("submit", async ev => {
   ev.preventDefault();
   const btn = $("#btnEntrar"); btn.disabled = true; btn.textContent = "Verificando…";
   $("#loginError").textContent = "";
-  try{
-    await datosListos;
-  }catch(e){
-    $("#loginError").textContent =
-      "No se pudieron cargar los datos. La página necesita servirse por http (no file://).";
-    btn.disabled = false; btn.textContent = "Ingresar";
-    return;
+  try{ await datosListos; }
+  catch(e){
+    $("#loginError").textContent = "No se pudieron cargar los datos (la página necesita servirse por http).";
+    btn.disabled = false; btn.textContent = "Ingresar"; return;
   }
   try{
     const clave = await derivarClave($("#pass").value);
@@ -81,7 +104,6 @@ $("#formLogin").addEventListener("submit", async ev => {
 });
 $("#btnSalir").addEventListener("click", () => { sessionStorage.removeItem("clave_sitio"); location.reload(); });
 
-/* ---------- detección de versión nueva ---------- */
 function vigilarActualizaciones(){
   setInterval(async () => {
     try{
@@ -92,328 +114,458 @@ function vigilarActualizaciones(){
         $("#actualizando").classList.remove("oculto");
         setTimeout(() => location.reload(), 2500);
       }
-    }catch(e){ /* offline: sin polling */ }
+    }catch(e){ /* offline */ }
   }, 5 * 60 * 1000);
 }
 
-/* ---------- charts (SVG, sin dependencias) ---------- */
+/* ---------- derivados ---------- */
+const RANGOS = [["1M",31],["6M",183],["1A",365],["5A",1827],["Todo",null]];
+function corte(dias, rango){ return rango==null ? -Infinity : dias[dias.length-1] - rango; }
+function variacion(vals, n=1){
+  if(vals.length < n+1) return null;
+  const a = vals[vals.length-1-n], b = vals[vals.length-1];
+  return a > 0 ? (b/a - 1) * 100 : null;
+}
+function mepPrincipal(){ return D.mep["AL30/AL30D"] || Object.values(D.mep)[0] || null; }
+function mepUltimo(){ const m = mepPrincipal(); return m ? m.v[m.v.length-1] : null; }
+function posiciones(){ return (D.cartera && D.cartera.posiciones) || []; }
+function valorARS(p){ const v = p.q * p.u; return p.m === "USD" ? v * (mepUltimo() || 0) : v; }
+function totalCartera(){ return posiciones().reduce((a,p) => a + valorARS(p), 0); }
+
+// Serie de valor de la cartera: símbolos con serie en la base escalan por su cierre;
+// posiciones en USD escalan por el MEP; el resto queda a valor actual (constante).
+function serieEvolucion(rango){
+  const base = D.simbolos.find(s => s.s === "AL30") || D.simbolos[0];
+  if(!base) return [];
+  const c0 = corte(base.d, rango);
+  const dias = base.d.filter(d => d >= c0);
+  const fuentes = posiciones().map(p => {
+    const hoy = valorARS(p);
+    const sim = D.simbolos.find(s => s.s === p.s);
+    if(sim){
+      const m = new Map(); sim.d.forEach((d,i) => m.set(d, sim.c[i]));
+      const ult = sim.c[sim.c.length-1];
+      return {hoy, m, ult};
+    }
+    if(p.m === "USD" && mepPrincipal()){
+      const mp = mepPrincipal();
+      const m = new Map(); mp.d.forEach((d,i) => m.set(d, mp.v[i]));
+      return {hoy, m, ult: mp.v[mp.v.length-1]};
+    }
+    return {hoy, m:null, ult:null};
+  });
+  const pts = [];
+  const previos = fuentes.map(() => null);
+  for(const d of dias){
+    let total = 0;
+    fuentes.forEach((f,i) => {
+      if(!f.m){ total += f.hoy; return; }
+      const v = f.m.get(d);
+      if(v != null) previos[i] = v;
+      total += previos[i] != null ? f.hoy * previos[i] / f.ult : f.hoy;
+    });
+    pts.push([d, total]);
+  }
+  return pts;
+}
+
+/* ---------- charts ---------- */
+function sparkline(cont, valores, ancho=120, alto=30, color="var(--accent)"){
+  cont.textContent = "";
+  if(!valores || valores.length < 2){ cont.textContent = "–"; return; }
+  const min = Math.min(...valores), max = Math.max(...valores);
+  const X = i => i/(valores.length-1)*(ancho-4)+2, Y = v => alto-3-((v-min)/(max-min||1))*(alto-6);
+  const svg = svgEl("svg", {viewBox:`0 0 ${ancho} ${alto}`, width:ancho, height:alto});
+  svg.append(svgEl("path", {
+    d: valores.map((v,i)=>(i?"L":"M")+X(i).toFixed(1)+" "+Y(v).toFixed(1)).join(""),
+    fill:"none", stroke:color, "stroke-width":"1.6", "stroke-linecap":"round"}));
+  const uy = Y(valores[valores.length-1]);
+  svg.append(svgEl("circle", {cx:X(valores.length-1).toFixed(1), cy:uy.toFixed(1), r:2.4, fill:color}));
+  cont.append(svg);
+}
+
 function ticksLindos(min, max, n){
   const span = max - min || 1, paso0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(paso0)));
   const paso = [1,2,2.5,5,10].map(m => m*mag).find(p => span/p <= n) || 10*mag;
   const t = []; for(let v = Math.ceil(min/paso)*paso; v <= max + 1e-9; v += paso) t.push(v);
   return t;
 }
-function lineChart(cont, series, opciones){
-  const o = Object.assign({alto:300, fmtY:v=>fmtNum(v)}, opciones);
+
+function areaChart(cont, puntos, opciones){
+  const o = Object.assign({alto:290, fmtY:v=>fmtPesos(v,0)}, opciones);
   cont.textContent = "";
-  const ancho = Math.max(cont.clientWidth || 900, 320), alto = o.alto;
-  const M = {t:14, r:14, b:26, l:56};
-  const xs = series.flatMap(s => s.puntos.map(p => p[0]));
-  const ys = series.flatMap(s => s.puntos.map(p => p[1]));
-  if(!xs.length){ cont.append(el("div",{style:"color:var(--muted);padding:30px 0;text-align:center"},"Sin datos en el rango")); return; }
-  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  if(!puntos.length){ cont.append(el("div",{style:"color:var(--text-faint);padding:36px 0;text-align:center"},"Sin datos en el rango")); return; }
+  const ancho = Math.max(cont.clientWidth || 800, 320), alto = o.alto;
+  const M = {t:12, r:14, b:26, l:70};
+  const xs = puntos.map(p=>p[0]), ys = puntos.map(p=>p[1]);
+  const x0 = xs[0], x1 = xs[xs.length-1];
   let y0 = Math.min(...ys), y1 = Math.max(...ys);
-  const margen = (y1 - y0) * 0.06 || y1 * 0.05 || 1; y0 -= margen; y1 += margen;
-  const X = d => M.l + (d - x0) / (x1 - x0 || 1) * (ancho - M.l - M.r);
-  const Y = v => alto - M.b - (v - y0) / (y1 - y0 || 1) * (alto - M.t - M.b);
-  const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
-  svg.setAttribute("viewBox", `0 0 ${ancho} ${alto}`);
-  svg.setAttribute("width","100%");
-  const NS = n => document.createElementNS("http://www.w3.org/2000/svg", n);
+  const mg = (y1-y0)*0.08 || y1*0.04 || 1; y0 -= mg; y1 += mg;
+  const X = d => M.l + (d-x0)/(x1-x0||1)*(ancho-M.l-M.r);
+  const Y = v => alto-M.b - (v-y0)/(y1-y0||1)*(alto-M.t-M.b);
+  const svg = svgEl("svg", {viewBox:`0 0 ${ancho} ${alto}`, width:"100%"});
+  const defs = NS("defs");
+  const gid = "gradEvo";
+  const gr = svgEl("linearGradient", {id:gid, x1:0, y1:0, x2:0, y2:1});
+  const st1 = svgEl("stop", {offset:"0%"}); st1.style.stopColor = "var(--accent)"; st1.style.stopOpacity = ".28";
+  const st2 = svgEl("stop", {offset:"100%"}); st2.style.stopColor = "var(--accent)"; st2.style.stopOpacity = "0";
+  gr.append(st1, st2); defs.append(gr); svg.append(defs);
   for(const t of ticksLindos(y0, y1, 5)){
-    const l = NS("line");
-    l.setAttribute("x1",M.l); l.setAttribute("x2",ancho-M.r);
-    l.setAttribute("y1",Y(t)); l.setAttribute("y2",Y(t));
-    l.setAttribute("stroke","var(--grid)"); svg.append(l);
-    const tx = NS("text"); tx.setAttribute("x",M.l-8); tx.setAttribute("y",Y(t)+4);
-    tx.setAttribute("text-anchor","end"); tx.textContent = o.fmtY(t); svg.append(tx);
+    svg.append(svgEl("line", {x1:M.l, x2:ancho-M.r, y1:Y(t), y2:Y(t), stroke:"var(--border)"}));
+    const tx = svgEl("text", {x:M.l-9, y:Y(t)+3.5, "text-anchor":"end"}); tx.textContent = o.fmtY(t); svg.append(tx);
   }
-  const nX = Math.min(5, Math.max(2, Math.floor(ancho/170)));
+  const nX = Math.min(5, Math.max(2, Math.floor(ancho/180)));
   for(let i=0;i<=nX;i++){
     const d = x0 + (x1-x0)*i/nX;
-    const tx = NS("text"); tx.setAttribute("x",X(d)); tx.setAttribute("y",alto-8);
-    tx.setAttribute("text-anchor", i===0?"start":(i===nX?"end":"middle"));
+    const tx = svgEl("text", {x:X(d), y:alto-8, "text-anchor": i===0?"start":(i===nX?"end":"middle")});
     tx.textContent = fmtFecha(d); svg.append(tx);
   }
-  for(const s of series){
-    const traza = s.puntos.map((pt,i)=>(i?"L":"M")+X(pt[0]).toFixed(1)+" "+Y(pt[1]).toFixed(1)).join("");
-    if(o.area && s.puntos.length > 1){
-      const pri = s.puntos[0], ult = s.puntos[s.puntos.length-1];
-      const a = NS("path");
-      a.setAttribute("d", traza + "L"+X(ult[0]).toFixed(1)+" "+(alto-M.b)+"L"+X(pri[0]).toFixed(1)+" "+(alto-M.b)+"Z");
-      a.setAttribute("fill", s.color); a.setAttribute("fill-opacity","0.08"); svg.append(a);
-    }
-    const p = NS("path");
-    p.setAttribute("d", traza);
-    p.setAttribute("fill","none"); p.setAttribute("stroke",s.color);
-    p.setAttribute("stroke-width","2"); p.setAttribute("stroke-linecap","round");
-    p.setAttribute("stroke-linejoin","round"); svg.append(p);
-    const u = s.puntos[s.puntos.length-1];
-    const fin = NS("circle");
-    fin.setAttribute("cx",X(u[0]).toFixed(1)); fin.setAttribute("cy",Y(u[1]).toFixed(1));
-    fin.setAttribute("r","4"); fin.setAttribute("fill",s.color);
-    fin.setAttribute("stroke","var(--surface)"); fin.setAttribute("stroke-width","2");
-    svg.append(fin);
-  }
-  if(series.length > 1){
-    const etiquetas = series.map(s => { const u = s.puntos[s.puntos.length-1];
-      return {s, y: Y(u[1]) - 9, x: X(u[0]) - 9}; }).sort((a,b) => a.y - b.y);
-    for(let i=1;i<etiquetas.length;i++)
-      if(etiquetas[i].y - etiquetas[i-1].y < 13) etiquetas[i].y = etiquetas[i-1].y + 13;
-    for(const e of etiquetas){
-      const tx = NS("text"); tx.setAttribute("x",e.x); tx.setAttribute("y",e.y);
-      tx.setAttribute("text-anchor","end"); tx.setAttribute("style",`fill:${e.s.color};font-weight:600`);
-      tx.textContent = e.s.nombre; svg.append(tx);
-    }
-  }
-  const cross = NS("line"); cross.setAttribute("y1",M.t); cross.setAttribute("y2",alto-M.b);
-  cross.setAttribute("stroke","var(--eje)"); cross.setAttribute("stroke-dasharray","3 3");
+  const traza = puntos.map((p,i)=>(i?"L":"M")+X(p[0]).toFixed(1)+" "+Y(p[1]).toFixed(1)).join("");
+  svg.append(svgEl("path", {d: traza+`L${X(x1).toFixed(1)} ${alto-M.b}L${X(x0).toFixed(1)} ${alto-M.b}Z`,
+                            fill:`url(#${gid})`, stroke:"none"}));
+  svg.append(svgEl("path", {d: traza, fill:"none", stroke:"var(--accent)", "stroke-width":"2",
+                            "stroke-linecap":"round", "stroke-linejoin":"round"}));
+  const u = puntos[puntos.length-1];
+  svg.append(svgEl("circle", {cx:X(u[0]).toFixed(1), cy:Y(u[1]).toFixed(1), r:4, fill:"var(--accent)",
+                              stroke:"var(--panel)", "stroke-width":2}));
+  // hover
+  const cross = svgEl("line", {y1:M.t, y2:alto-M.b, stroke:"var(--border-strong)", "stroke-dasharray":"3 3"});
   cross.style.display = "none"; svg.append(cross);
-  const puntosCross = series.map(s => { const c = NS("circle"); c.setAttribute("r",4);
-    c.setAttribute("fill",s.color); c.setAttribute("stroke","var(--surface)");
-    c.setAttribute("stroke-width",2); c.style.display="none"; svg.append(c); return c; });
+  const dot = svgEl("circle", {r:4, fill:"var(--accent)", stroke:"var(--panel)", "stroke-width":2});
+  dot.style.display = "none"; svg.append(dot);
   const tip = el("div",{class:"tooltip oculto"});
   cont.style.position = "relative"; cont.append(svg, tip);
-  const xsBase = series[0].puntos.map(p => p[0]);
   svg.addEventListener("pointermove", ev => {
     const r = svg.getBoundingClientRect();
-    const dx = x0 + ((ev.clientX - r.left) * (ancho / r.width) - M.l) / (ancho - M.l - M.r) * (x1 - x0);
-    let mejor = 0, dist = Infinity;
-    for(let i=0;i<xsBase.length;i++){ const dd = Math.abs(xsBase[i]-dx); if(dd<dist){dist=dd;mejor=i;} }
-    const dia = xsBase[mejor];
-    cross.setAttribute("x1",X(dia)); cross.setAttribute("x2",X(dia)); cross.style.display="";
-    tip.textContent = ""; tip.classList.remove("oculto");
-    tip.append(el("div",{class:"tfecha"}, diaAFecha(dia).toLocaleDateString("es-AR",{day:"2-digit",month:"long",year:"numeric",timeZone:"UTC"})));
-    series.forEach((s,i) => {
-      const pt = s.puntos.find(p => p[0]===dia) || s.puntos[Math.min(mejor, s.puntos.length-1)];
-      if(!pt){ puntosCross[i].style.display="none"; return; }
-      puntosCross[i].setAttribute("cx",X(pt[0])); puntosCross[i].setAttribute("cy",Y(pt[1]));
-      puntosCross[i].style.display="";
-      const fila = el("div",{class:"fila"});
-      const clave = el("span",{class:"clave"}); clave.style.borderTopColor = s.color;
-      fila.append(clave, el("span",{}, s.nombre), el("span",{class:"tv"}, o.fmtY(pt[1])));
-      tip.append(fila);
-    });
-    const tw = tip.offsetWidth, px = (X(dia)/ancho)*r.width;
-    tip.style.left = Math.min(Math.max(px+14, 4), r.width - tw - 4) + "px";
-    tip.style.top = "10px";
+    const dx = x0 + ((ev.clientX-r.left)*(ancho/r.width)-M.l)/(ancho-M.l-M.r)*(x1-x0);
+    let mejor=0, dist=Infinity;
+    puntos.forEach((p,i)=>{ const dd=Math.abs(p[0]-dx); if(dd<dist){dist=dd;mejor=i;} });
+    const p = puntos[mejor];
+    cross.setAttribute("x1",X(p[0])); cross.setAttribute("x2",X(p[0])); cross.style.display="";
+    dot.setAttribute("cx",X(p[0])); dot.setAttribute("cy",Y(p[1])); dot.style.display="";
+    tip.textContent=""; tip.classList.remove("oculto");
+    tip.append(el("div",{class:"tfecha"}, fmtFechaLarga(p[0])));
+    const f = el("div",{class:"fila"}); f.append(el("span",{},"Valor"), el("span",{}, o.fmtY(p[1])));
+    tip.append(f);
+    const px = (X(p[0])/ancho)*r.width, tw = tip.offsetWidth;
+    tip.style.left = Math.min(Math.max(px+14,4), r.width-tw-4)+"px"; tip.style.top = "8px";
   });
-  svg.addEventListener("pointerleave", () => { cross.style.display="none";
-    puntosCross.forEach(c=>c.style.display="none"); tip.classList.add("oculto"); });
-}
-function sparkline(td, valores){
-  const w=110, h=26; if(valores.length<2){ td.textContent="–"; return; }
-  const min=Math.min(...valores), max=Math.max(...valores);
-  const X=i=>i/(valores.length-1)*(w-4)+2, Y=v=>h-3-((v-min)/(max-min||1))*(h-6);
-  const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
-  svg.setAttribute("viewBox",`0 0 ${w} ${h}`); svg.setAttribute("width",w); svg.setAttribute("height",h);
-  const p=document.createElementNS("http://www.w3.org/2000/svg","path");
-  p.setAttribute("d",valores.map((v,i)=>(i?"L":"M")+X(i).toFixed(1)+" "+Y(v).toFixed(1)).join(""));
-  p.setAttribute("fill","none"); p.setAttribute("stroke","var(--s1)");
-  p.setAttribute("stroke-width","1.6"); p.setAttribute("stroke-linecap","round");
-  svg.append(p); td.textContent=""; td.append(svg);
+  svg.addEventListener("pointerleave", () => { cross.style.display="none"; dot.style.display="none"; tip.classList.add("oculto"); });
 }
 
-/* ---------- Excel (.xlsx real: zip sin compresión + SpreadsheetML mínimo) ---------- */
-const _crcTabla = (() => { const t = new Uint32Array(256);
-  for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c = (c&1) ? 0xEDB88320 ^ (c>>>1) : c>>>1; t[n]=c; }
-  return t; })();
-function crc32(u8){ let c = 0xFFFFFFFF;
-  for(let i=0;i<u8.length;i++) c = _crcTabla[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
-  return (c ^ 0xFFFFFFFF) >>> 0; }
-function zipStore(entradas){  // entradas: [{nombre, datos:Uint8Array}] -> Uint8Array (método store)
-  const enc = new TextEncoder(); const partes = [], centro = []; let offset = 0;
-  const u16 = v => new Uint8Array([v&255, (v>>8)&255]);
-  const u32 = v => new Uint8Array([v&255, (v>>8)&255, (v>>16)&255, (v>>>24)&255]);
-  for(const e of entradas){
-    const nombre = enc.encode(e.nombre), crc = crc32(e.datos), n = e.datos.length;
-    partes.push(u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
-                u32(crc), u32(n), u32(n), u16(nombre.length), u16(0), nombre, e.datos);
-    centro.push({nombre, crc, n, offset});
-    offset += 30 + nombre.length + n;
+function dona(cont, legCont, items){  // items: [{et, sub, v}] ordenados desc
+  cont.textContent = ""; legCont.textContent = "";
+  const total = items.reduce((a,i)=>a+i.v,0) || 1;
+  const tam = 168, r = 62, cx = tam/2, cy = tam/2, grosor = 17;
+  const svg = svgEl("svg", {viewBox:`0 0 ${tam} ${tam}`, width:tam, height:tam});
+  const circ = 2*Math.PI*r;
+  let acumulado = 0;
+  items.forEach((it,i) => {
+    const frac = it.v/total, largo = Math.max(frac*circ - 2.5, 0.5);
+    const c = svgEl("circle", {cx, cy, r, fill:"none", "stroke-width":grosor,
+      "stroke-dasharray":`${largo} ${circ-largo}`, "stroke-dashoffset":String(-acumulado*circ + circ/4),
+      "stroke-linecap":"butt"});
+    c.style.stroke = PALETA_DONA[i % PALETA_DONA.length];
+    svg.append(c);
+    acumulado += frac;
+  });
+  cont.append(svg);
+  const centro = el("div",{class:"centro"});
+  centro.append(el("div",{class:"n"}, String(items.length)), el("div",{class:"t"},"activos"));
+  cont.append(centro);
+  items.forEach((it,i) => {
+    const fila = el("div",{class:"item"});
+    const sw = el("span",{class:"sw"}); sw.style.background = PALETA_DONA[i % PALETA_DONA.length];
+    fila.append(sw, el("span",{class:"mono"}, it.et), el("span",{class:"et"}, it.sub||""),
+                el("span",{class:"pc"}, fmtPct(100*it.v/total,1).replace("+","")));
+    legCont.append(fila);
+  });
+}
+
+function velasChart(cont, sim, modo, rango){
+  cont.textContent = "";
+  const c0 = corte(sim.d, rango);
+  const idx = sim.d.map((d,i)=>i).filter(i => sim.d[i] >= c0);
+  if(!idx.length){ cont.append(el("div",{style:"color:var(--text-faint);padding:36px 0;text-align:center"},"Sin datos en el rango")); return; }
+  const f = i => modo==="a" && sim.c[i] > 0 ? sim.a[i]/sim.c[i] : 1;
+  const serie = idx.map(i => ({d:sim.d[i], o:sim.o[i]*f(i), h:sim.h[i]*f(i), l:sim.l[i]*f(i), c:(modo==="a"?sim.a[i]:sim.c[i]), vo:sim.vo[i]}));
+  const ancho = Math.max(cont.clientWidth || 860, 320), alto = 320;
+  const M = {t:12, r:74, b:26, l:10};
+  const plotW = ancho-M.l-M.r, n = serie.length;
+  const modoLinea = n > 260;   // velas ilegibles: caemos a línea
+  let y0 = Math.min(...serie.map(v=>v.l)), y1 = Math.max(...serie.map(v=>v.h));
+  const mg = (y1-y0)*0.06 || y1*0.04 || 1; y0 -= mg; y1 += mg;
+  const paso = plotW/n;
+  const X = j => M.l + paso*(j+0.5);
+  const Y = v => alto-M.b - (v-y0)/(y1-y0||1)*(alto-M.t-M.b);
+  const svg = svgEl("svg", {viewBox:`0 0 ${ancho} ${alto}`, width:"100%"});
+  for(const t of ticksLindos(y0,y1,5)){
+    svg.append(svgEl("line", {x1:M.l, x2:ancho-M.r, y1:Y(t), y2:Y(t), stroke:"var(--border)"}));
+    const tx = svgEl("text", {x:ancho-M.r+8, y:Y(t)+3.5, "text-anchor":"start"}); tx.textContent = fmtNum(t); svg.append(tx);
   }
-  const inicioCentro = offset; let tamCentro = 0;
-  for(const c of centro){
-    partes.push(u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
-                u32(c.crc), u32(c.n), u32(c.n), u16(c.nombre.length), u16(0), u16(0),
-                u16(0), u16(0), u32(0), u32(c.offset), c.nombre);
-    tamCentro += 46 + c.nombre.length;
+  const nX = Math.min(5, Math.max(2, Math.floor(ancho/180)));
+  for(let i=0;i<=nX;i++){
+    const j = Math.round((n-1)*i/nX);
+    const tx = svgEl("text", {x:X(j), y:alto-8, "text-anchor": i===0?"start":(i===nX?"end":"middle")});
+    tx.textContent = fmtFecha(serie[j].d); svg.append(tx);
   }
-  partes.push(u32(0x06054b50), u16(0), u16(0), u16(centro.length), u16(centro.length),
-              u32(tamCentro), u32(inicioCentro), u16(0));
-  let total = 0; for(const p of partes) total += p.length;
-  const out = new Uint8Array(total); let pos = 0;
-  for(const p of partes){ out.set(p, pos); pos += p.length; }
-  return out;
-}
-const xmlEsc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-function xlsx(encabezados, filas, nombreHoja){  // filas: arrays de string|number|null
-  const fila = (celdas, r) => "<row r=\"" + r + "\">" + celdas.map((v,i) => {
-    if(v==null || v==="") return "";
-    const col = colLetra(i) + r;
-    if(typeof v === "number") return `<c r="${col}"><v>${v}</v></c>`;
-    return `<c r="${col}" t="inlineStr"><is><t>${xmlEsc(v)}</t></is></c>`;
-  }).join("") + "</row>";
-  function colLetra(i){ let s=""; i++; while(i){ const m=(i-1)%26; s=String.fromCharCode(65+m)+s; i=(i-m-1)/26; } return s; }
-  const hoja = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>`
-    + fila(encabezados, 1) + filas.map((f,i) => fila(f, i+2)).join("") + `</sheetData></worksheet>`;
-  const wb = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${xmlEsc(nombreHoja)}" sheetId="1" r:id="rId1"/></sheets></workbook>`;
-  const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`;
-  const rels0 = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
-  const tipos = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`;
-  const enc = new TextEncoder();
-  return zipStore([
-    {nombre:"[Content_Types].xml", datos:enc.encode(tipos)},
-    {nombre:"_rels/.rels", datos:enc.encode(rels0)},
-    {nombre:"xl/workbook.xml", datos:enc.encode(wb)},
-    {nombre:"xl/_rels/workbook.xml.rels", datos:enc.encode(rels)},
-    {nombre:"xl/worksheets/sheet1.xml", datos:enc.encode(hoja)},
-  ]);
-}
-function descargarXlsx(){
-  const {encabezados, filas} = matrizPrecios();
-  const bytes = xlsx(encabezados, filas, "Precios");
-  const blob = new Blob([bytes], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-  const a = el("a", {href: URL.createObjectURL(blob),
-                     download: "precios_" + CFG.generado.slice(0,10).replaceAll("-","") + ".xlsx"});
-  document.body.append(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-}
-
-/* ---------- datos derivados ---------- */
-function corte(dias){ if(rango==null) return -Infinity; return dias[dias.length-1] - rango; }
-function serieVisible(sim){
-  const vals = modoSerie==="a" ? sim.a : sim.c, c = corte(sim.d), pts = [];
-  for(let i=0;i<sim.d.length;i++) if(sim.d[i] >= c) pts.push([sim.d[i], vals[i]]);
-  return pts;
-}
-function variacion(vals, n){
-  if(vals.length < n+1) return null;
-  const a = vals[vals.length-1-n], b = vals[vals.length-1];
-  return a > 0 ? (b/a - 1) * 100 : null;
-}
-function matrizPrecios(){  // fecha (desc) × símbolo, respetando rango y modoPrecios
-  const dias = new Set();
-  for(const s of D.simbolos){ const c = corte(s.d); for(const d of s.d) if(d >= c) dias.add(d); }
-  const orden = [...dias].sort((a,b) => b-a);
-  const mapas = D.simbolos.map(s => { const m = new Map();
-    const vals = modoPrecios==="a" ? s.a : s.c;
-    s.d.forEach((d,i) => m.set(d, vals[i])); return m; });
-  const encabezados = ["Fecha", ...D.simbolos.map(s => s.s)];
-  const filas = orden.map(d => [isoDia(d), ...mapas.map(m => m.has(d) ? m.get(d) : null)]);
-  return {encabezados, filas};
-}
-
-/* ---------- render por sección ---------- */
-function renderRangos(){
-  document.querySelectorAll("[data-rango]").forEach(cont => {
-    cont.textContent = "";
-    cont.append(el("span",{class:"rot"},"Rango:"));
-    for(const [rot, dias] of [["1M",31],["6M",183],["1A",365],["5A",1827],["Todo",null]]){
-      const b = el("button",{}, rot);
-      if(dias===rango) b.classList.add("activo");
-      b.addEventListener("click", () => { rango = dias; renderRangos(); renderVista(); });
-      cont.append(b);
+  if(modoLinea){
+    const traza = serie.map((v,j)=>(j?"L":"M")+X(j).toFixed(1)+" "+Y(v.c).toFixed(1)).join("");
+    svg.append(svgEl("path",{d:traza, fill:"none", stroke:"var(--accent)", "stroke-width":"1.8",
+                             "stroke-linecap":"round", "stroke-linejoin":"round"}));
+  }else{
+    const cw = Math.min(Math.max(paso*0.65, 1.5), 11);
+    for(let j=0;j<n;j++){
+      const v = serie[j], sube = v.c >= v.o, col = sube ? "var(--up)" : "var(--down)";
+      const w = svgEl("line", {x1:X(j), x2:X(j), y1:Y(v.h), y2:Y(v.l), "stroke-width":1});
+      w.style.stroke = col; svg.append(w);
+      const yA = Y(Math.max(v.o,v.c)), yB = Y(Math.min(v.o,v.c));
+      const cuerpo = svgEl("rect", {x:X(j)-cw/2, y:yA, width:cw, height:Math.max(yB-yA,1), rx:1});
+      cuerpo.style.fill = col; svg.append(cuerpo);
     }
+  }
+  // línea punteada en el último precio + etiqueta sobre el eje derecho
+  const ult = serie[n-1].c;
+  svg.append(svgEl("line", {x1:M.l, x2:ancho-M.r, y1:Y(ult), y2:Y(ult),
+                            stroke:"var(--accent)", "stroke-width":1, "stroke-dasharray":"4 4", opacity:.8}));
+  const etq = svgEl("rect", {x:ancho-M.r+2, y:Y(ult)-9, width:M.r-6, height:18, rx:4});
+  etq.style.fill = "var(--accent-soft)"; svg.append(etq);
+  const etx = svgEl("text", {x:ancho-M.r+8, y:Y(ult)+3.5, "text-anchor":"start"});
+  etx.style.fill = "var(--accent)"; etx.style.fontWeight = "600"; etx.textContent = fmtNum(ult); svg.append(etx);
+  // hover
+  const cross = svgEl("line", {y1:M.t, y2:alto-M.b, stroke:"var(--border-strong)", "stroke-dasharray":"3 3"});
+  cross.style.display="none"; svg.append(cross);
+  const tip = el("div",{class:"tooltip oculto"});
+  cont.style.position = "relative"; cont.append(svg, tip);
+  svg.addEventListener("pointermove", ev => {
+    const r = svg.getBoundingClientRect();
+    const j = Math.min(n-1, Math.max(0, Math.round(((ev.clientX-r.left)*(ancho/r.width)-M.l)/paso - 0.5)));
+    const v = serie[j];
+    cross.setAttribute("x1",X(j)); cross.setAttribute("x2",X(j)); cross.style.display="";
+    tip.textContent=""; tip.classList.remove("oculto");
+    tip.append(el("div",{class:"tfecha"}, fmtFechaLarga(v.d)));
+    for(const [et,val] of [["Apertura",fmtNum(v.o)],["Máximo",fmtNum(v.h)],["Mínimo",fmtNum(v.l)],
+                           ["Cierre",fmtNum(v.c)],["Volumen",fmtVol(v.vo)]]){
+      const fila = el("div",{class:"fila"}); fila.append(el("span",{},et), el("span",{},val)); tip.append(fila);
+    }
+    const px = (X(j)/ancho)*r.width, tw = tip.offsetWidth;
+    tip.style.left = Math.min(Math.max(px+14,4), r.width-tw-4)+"px"; tip.style.top = "8px";
   });
+  svg.addEventListener("pointerleave", () => { cross.style.display="none"; tip.classList.add("oculto"); });
 }
-function renderTiles(){
-  const t = $("#tiles"); t.textContent = "";
-  for(const [par, s] of Object.entries(D.mep)){
-    const tile = el("div",{class:"tile"});
-    tile.append(el("div",{class:"rotulo"}, "MEP " + par));
-    tile.append(el("div",{class:"valor"}, "$ " + fmtNum(s.v[s.v.length-1], 0)));
-    const v = variacion(s.v, 1);
-    if(v!=null){ tile.append(el("div",{class:"delta "+(v>=0?"up":"down")},
-        (v>=0?"▲ ":"▼ ")+fmtPct(v)+" vs rueda anterior")); }
+
+/* ---------- render: controles comunes ---------- */
+function renderRangos(cont, actual, alCambiar){
+  cont.textContent = "";
+  for(const [rot, dias] of RANGOS){
+    const b = el("button",{}, rot);
+    if(dias===actual) b.classList.add("activo");
+    b.addEventListener("click", () => alCambiar(dias));
+    cont.append(b);
+  }
+}
+
+/* ---------- render: Mi cartera ---------- */
+function renderCartera(){
+  const pos = posiciones(), total = totalCartera(), mep = mepUltimo();
+  $("#carteraTotal").textContent = fmtPesos(total, 0);
+  const prev = pos.reduce((a,p) => a + valorARS(p)/(1+p.vd/100), 0);
+  const delta = total - prev, pct = prev > 0 ? delta/prev*100 : 0;
+  const chip = $("#carteraVarDia");
+  chip.textContent = flecha(delta) + fmtPesos(Math.abs(delta),0) + " · " + fmtPct(pct);
+  chip.classList.toggle("rojo", delta < 0);
+  $("#carteraUsd").textContent = mep ? "≈ US$ " + fmtNum(total/mep, 0) + " al MEP" : "";
+
+  const conCosto = pos.filter(p => p.ppc != null);
+  const costo = conCosto.reduce((a,p) => a + p.q*p.ppc * (p.m==="USD"?mep:1), 0);
+  const valorCC = conCosto.reduce((a,p) => a + valorARS(p), 0);
+  const res = valorCC - costo;
+  const elMonto = $("#resultadoMonto");
+  elMonto.textContent = (res>=0?"+":"−") + fmtPesos(Math.abs(res),0).slice(0);
+  elMonto.classList.toggle("up", res>=0); elMonto.classList.toggle("down", res<0);
+  $("#resultadoPct").textContent = costo>0 ? fmtPct(res/costo*100) + " sobre el costo" : "";
+  $("#resultadoNota").textContent = `Sobre ${conCosto.length} de ${pos.length} posiciones con costo conocido (IOL no informa PPC del resto)`;
+
+  const mp = mepPrincipal();
+  if(mp){
+    $("#mepValor").textContent = fmtPesos(mp.v[mp.v.length-1], 0);
+    const v = variacion(mp.v);
+    $("#mepVar").textContent = v!=null ? flecha(v)+fmtPct(v)+" vs rueda anterior" : "";
+    $("#mepVar").className = "nota mono " + (v>=0?"up":"down");
+    sparkline($("#mepSpark"), mp.v.slice(-30), 150, 34);
+  }
+
+  renderRangos($("#rangoCartera"), rangoCartera, d => { rangoCartera = d; renderCartera(); });
+  areaChart($("#chartEvolucion"), serieEvolucion(rangoCartera));
+
+  const items = pos.map(p => ({et:p.s, sub:p.n, v:valorARS(p)})).sort((a,b)=>b.v-a.v);
+  dona($("#dona"), $("#leyendaDona"), items);
+
+  const tb = $("#tablaPosiciones tbody"); tb.textContent = "";
+  for(const p of [...pos].sort((a,b)=>valorARS(b)-valorARS(a))){
+    const v = valorARS(p), tr = el("tr");
+    const c1 = el("td"); c1.append(el("span",{class:"tick mono"},p.s), el("span",{class:"nom"},p.n)); tr.append(c1);
+    tr.append(el("td",{}, fmtNum(p.q, p.q%1?2:0)));
+    tr.append(el("td",{}, p.ppc!=null ? fmtNum(p.ppc, 3) : "–"));
+    tr.append(el("td",{}, (p.m==="USD"?"US$ ":"$ ") + fmtNum(p.u, p.u<10?3:2)));
+    const vd = el("td",{}, flecha(p.vd)+fmtPct(p.vd)); vd.className = p.vd>=0?"up":"down"; tr.append(vd);
+    tr.append(el("td",{}, fmtPesos(v,0)));
+    tr.append(el("td",{}, fmtNum(100*v/total,1)+" %"));
+    tb.append(tr);
+  }
+  $("#subPosiciones").textContent = pos.length + " posiciones · valuación en pesos al MEP " +
+      (mep ? fmtPesos(mep,0) : "–") + " · snapshot IOL " + (D.cartera ? D.cartera.ts.slice(0,10) : "");
+}
+
+/* ---------- render: Mis inversiones ---------- */
+function renderInversiones(){
+  const pos = [...posiciones()].sort((a,b)=>valorARS(b)-valorARS(a));
+  const mep = mepUltimo();
+  const tb = $("#tablaInversiones tbody"); tb.textContent = "";
+  let tCosto = 0, tValor = 0, tValorCC = 0;
+  for(const p of pos){
+    const v = valorARS(p);
+    const costo = p.ppc!=null ? p.q*p.ppc*(p.m==="USD"?mep:1) : null;
+    tValor += v;
+    if(costo!=null){ tCosto += costo; tValorCC += v; }
+    const tr = el("tr");
+    const c1 = el("td");
+    const linea = el("div"); linea.append(el("span",{class:"tick mono"},p.s), el("span",{class:"nom"},p.n));
+    c1.append(linea);
+    const spark = el("span",{class:"chispa"});
+    const sim = D.simbolos.find(s => s.s === p.s);
+    if(sim) sparkline(spark, sim.c.slice(-30), 90, 22, "var(--text-faint)");
+    else spark.textContent = "";
+    c1.append(spark); tr.append(c1);
+    tr.append(el("td",{}, fmtNum(p.q, p.q%1?2:0)));
+    tr.append(el("td",{}, p.ppc!=null ? fmtNum(p.ppc,3) : "–"));
+    tr.append(el("td",{}, (p.m==="USD"?"US$ ":"$ ") + fmtNum(p.u, p.u<10?3:2)));
+    tr.append(el("td",{}, costo!=null ? fmtPesos(costo,0) : "–"));
+    tr.append(el("td",{}, fmtPesos(v,0)));
+    const tdRes = el("td");
+    if(costo!=null){
+      const r = v-costo;
+      tdRes.textContent = (r>=0?"+":"−")+fmtPesos(Math.abs(r),0)+" · "+fmtPct(costo>0?r/costo*100:0);
+      tdRes.className = r>=0?"up":"down";
+    } else tdRes.textContent = "–";
+    tr.append(tdRes);
+    const vd = el("td",{}, flecha(p.vd)+fmtPct(p.vd)); vd.className = p.vd>=0?"up":"down"; tr.append(vd);
+    tb.append(tr);
+  }
+  const tf = $("#tablaInversiones tfoot"); tf.textContent = "";
+  const tr = el("tr");
+  tr.append(el("td",{},"Total"), el("td",{},""), el("td",{},""), el("td",{},""));
+  tr.append(el("td",{}, tCosto>0 ? fmtPesos(tCosto,0) : "–"));
+  tr.append(el("td",{}, fmtPesos(tValor,0)));
+  const rT = tValorCC - tCosto;
+  const tdR = el("td",{}, tCosto>0 ? (rT>=0?"+":"−")+fmtPesos(Math.abs(rT),0)+" · "+fmtPct(rT/tCosto*100) : "–");
+  tdR.className = rT>=0?"up":"down"; tr.append(tdR);
+  tr.append(el("td",{},""));
+  tf.append(tr);
+  $("#subInversiones").textContent = "Snapshot IOL " + (D.cartera ? D.cartera.ts.replace("T"," ").replace("Z"," UTC") : "");
+  $("#notaInversiones").textContent =
+      "Costo y resultado sólo donde el PPC es reconstruible desde las operaciones (única compra, sin ventas); IOL no informa PPC en el portafolio.";
+}
+
+/* ---------- render: Mercado ---------- */
+function statCard(rotulo, valorTxt, notaEl, extraEl){
+  const c = el("div",{class:"card stat"});
+  c.append(el("div",{class:"rotulo"}, rotulo));
+  const v = el("div",{class:"valor mono"});
+  if(typeof valorTxt === "string") v.textContent = valorTxt; else v.append(valorTxt);
+  c.append(v);
+  if(notaEl) c.append(notaEl);
+  if(extraEl) c.append(extraEl);
+  return c;
+}
+function renderMercado(){
+  const cont = $("#statsMercado"); cont.textContent = "";
+  for(const par of ["AL30/AL30D","GD30/GD30D"]){
+    const s = D.mep[par]; if(!s) continue;
+    const v = variacion(s.v);
+    const nota = el("div",{class:"nota mono " + (v>=0?"up":"down")}, v!=null ? flecha(v)+fmtPct(v)+" vs rueda anterior" : "");
     const chispa = el("div",{class:"chispa"});
-    sparkline(chispa, s.v.slice(-30));
-    tile.append(chispa);
-    t.append(tile);
+    const card = statCard("MEP " + par, fmtPesos(s.v[s.v.length-1],0), nota, chispa);
+    cont.append(card);
+    sparkline(chispa, s.v.slice(-30), 150, 30);
   }
   const ult = D.salud[0];
   if(ult){
-    const tile = el("div",{class:"tile"});
-    tile.append(el("div",{class:"rotulo"},"Última corrida ("+ult.p+")"));
-    const v = el("div",{class:"valor"}); v.append(el("span",{class:"badge "+ult.r}, ult.r)); tile.append(v);
-    tile.append(el("div",{class:"delta"},(ult.va??0)+" válidas · "+(ult.in??0)+" sospechosas"));
-    t.append(tile);
+    const badge = el("span",{class:"badge "+ult.r}, ult.r);
+    const nota = el("div",{class:"nota mono"},
+        `${ult.va??0} válidas · ${ult.in??0} sospechosas · latencia ${Math.round(ult.du??0)}s`);
+    cont.append(statCard("Última corrida ("+ult.p+")", badge, nota));
   }
-  const tile = el("div",{class:"tile"});
-  tile.append(el("div",{class:"rotulo"},"Universo"));
-  tile.append(el("div",{class:"valor"}, String(D.simbolos.length)));
-  tile.append(el("div",{class:"delta"},"instrumentos seguidos"));
-  t.append(tile);
+  cont.append(statCard("Universo", String(D.simbolos.length),
+      el("div",{class:"nota"},"instrumentos seguidos")));
+
+  if(!simboloVelas) simboloVelas = D.simbolos[0].s;
+  const sel = $("#selInstrumento");
+  if(!sel.options.length){
+    D.simbolos.forEach(s => sel.append(el("option",{value:s.s}, s.s)));
+    sel.addEventListener("change", () => { simboloVelas = sel.value; renderVelas(); });
+  }
+  sel.value = simboloVelas;
+  renderRangos($("#rangoVelas"), rangoVelas, d => { rangoVelas = d; renderVelas(); });
+  renderVelas();
+  renderTablaInstrumentos();
 }
-function renderPrincipal(){
-  const sim = D.simbolos.find(s => s.s === simboloSel) || D.simbolos[0];
-  simboloSel = sim.s;
-  $("#tituloSerie").textContent = sim.s + " — cierre " + (modoSerie==="a"?"ajustado":"crudo") + " (" + sim.m + ")";
-  const cob = Math.round(100 * sim.va.reduce((a,b)=>a+b,0) / sim.va.length);
-  $("#subSerie").textContent = sim.t + " · " + sim.d.length + " ruedas · " + cob + "% con dato válido";
-  lineChart($("#chartPrincipal"), [{nombre:sim.s, color:"var(--s1)", puntos:serieVisible(sim)}],
-            {fmtY:v=>fmtNum(v), area:true});
+function renderVelas(){
+  const sim = D.simbolos.find(s => s.s === simboloVelas) || D.simbolos[0];
+  simboloVelas = sim.s;
+  $("#tituloVelas").textContent = sim.s + (nombreDe(sim.s) ? " — " + nombreDe(sim.s) : "");
+  const c0 = corte(sim.d, rangoVelas), n = sim.d.filter(d=>d>=c0).length;
+  $("#subVelas").textContent = `${sim.t} · ${sim.m} · cierre ${modoVelas==="a"?"ajustado":"crudo"} · ${n} ruedas` +
+      (n > 260 ? " (línea: demasiadas velas para el ancho)" : "");
+  velasChart($("#chartVelas"), sim, modoVelas, rangoVelas);
   document.querySelectorAll("#tablaInstrumentos tbody tr").forEach(tr =>
-    tr.classList.toggle("sel", tr.dataset.s === sim.s));
+      tr.classList.toggle("sel", tr.dataset.s === sim.s));
 }
-function renderPrecios(){
-  const {encabezados, filas} = matrizPrecios();
-  const MAX = 250;
-  const thead = $("#tablaPrecios thead"); thead.textContent = "";
-  const trh = el("tr"); encabezados.forEach(h => trh.append(el("th",{},h))); thead.append(trh);
-  const tbody = $("#tablaPrecios tbody"); tbody.textContent = "";
-  for(const f of filas.slice(0, MAX)){
-    const tr = el("tr");
-    tr.append(el("td",{}, f[0]));
-    for(let i=1;i<f.length;i++)
-      tr.append(el("td",{}, f[i]==null ? "–" : fmtNum(f[i])));
-    tbody.append(tr);
-  }
-  $("#subPrecios").textContent = "Cierre " + (modoPrecios==="a"?"ajustado":"crudo") +
-      " · " + filas.length + " ruedas × " + D.simbolos.length + " símbolos en el rango elegido";
-  $("#notaPrecios").textContent = filas.length > MAX
-      ? "Se muestran las últimas " + MAX + " ruedas; la descarga a Excel incluye las " + filas.length + " del rango."
-      : "La descarga a Excel incluye exactamente lo que ves.";
-}
-function renderMep(){
-  const colores = ["var(--s1)","var(--s2)"];
-  const series = Object.entries(D.mep).map(([par,s],i) => {
-    const c = corte(s.d), pts = [];
-    for(let j=0;j<s.d.length;j++) if(s.d[j]>=c) pts.push([s.d[j], s.v[j]]);
-    return {nombre:par, color:colores[i%2], puntos:pts};
-  }).filter(s => s.puntos.length);
-  lineChart($("#chartMep"), series, {alto:280, fmtY:v=>"$ "+fmtNum(v,0)});
-  const leg = $("#legMep"); leg.textContent = "";
-  series.forEach(s => { const it = el("span");
-    const k = el("span",{class:"clave"}); k.style.borderTopColor = s.color;
-    it.append(k, document.createTextNode(s.nombre)); leg.append(it); });
-}
-function renderInstrumentos(){
+function renderTablaInstrumentos(){
   const tb = $("#tablaInstrumentos tbody"); tb.textContent = "";
   for(const sim of D.simbolos){
     const tr = el("tr",{"data-s":sim.s});
-    const c1 = el("td"); c1.append(el("span",{class:"sim"},sim.s), el("span",{class:"tipo"},sim.t)); tr.append(c1);
+    const c1 = el("td"); c1.append(el("span",{class:"tick mono"},sim.s), el("span",{class:"nom"}, nombreDe(sim.s) || sim.t)); tr.append(c1);
     tr.append(el("td",{}, (sim.m==="USD"?"US$ ":"$ ") + fmtNum(sim.c[sim.c.length-1])));
-    for(const n of [1, 21]){
-      const v = variacion(sim.a, n), td = el("td");
-      if(v==null) td.textContent = "–";
-      else{ td.textContent = (v>=0?"▲ ":"▼ ") + fmtPct(v); td.style.color = v>=0?"var(--up)":"var(--down)"; }
-      tr.append(td);
-    }
-    const cob = Math.round(100 * sim.va.reduce((a,b)=>a+b,0) / sim.va.length);
-    tr.append(el("td",{class:"oc-movil"}, cob + "%"));
-    const tdSpark = el("td",{class:"oc-movil"}); sparkline(tdSpark, sim.a.slice(-63)); tr.append(tdSpark);
-    tr.addEventListener("click", () => { simboloSel = sim.s; $("#selSimbolo").value = sim.s;
-      cambiarVista("resumen"); });
+    const v = variacion(sim.c), vd = el("td",{}, v!=null ? flecha(v)+fmtPct(v) : "–");
+    vd.className = v>=0?"up":"down"; tr.append(vd);
+    const tdS = el("td"); sparkline(tdS, sim.c.slice(-30), 100, 24, "var(--text-faint)"); tr.append(tdS);
+    tr.append(el("td",{}, fmtVol(sim.vo[sim.vo.length-1])));
+    tr.addEventListener("click", () => { simboloVelas = sim.s; $("#selInstrumento").value = sim.s;
+      renderVelas(); $("#chartVelas").scrollIntoView({behavior:"smooth", block:"center"}); });
     tb.append(tr);
   }
 }
+
+/* ---------- render: Salud ---------- */
 function renderSalud(){
+  const cont = $("#statsSalud"); cont.textContent = "";
+  const cob = D.simbolos.map(s => s.va.reduce((a,b)=>a+b,0)/s.va.length);
+  const cobProm = 100*cob.reduce((a,b)=>a+b,0)/(cob.length||1);
+  const ruedas = Math.max(...D.simbolos.map(s=>s.d.length), 0);
+  const sospechosas = D.simbolos.reduce((a,s)=>a+s.va.filter(v=>!v).length, 0);
+  const ult = D.salud[0];
+  cont.append(statCard("Cobertura", fmtNum(cobProm,1)+" %", el("div",{class:"nota"},"promedio de ruedas válidas")));
+  cont.append(statCard("Ruedas", fmtNum(ruedas,0), el("div",{class:"nota"},"histórico máximo por símbolo")));
+  cont.append(statCard("Sospechosas", fmtNum(sospechosas,0), el("div",{class:"nota"},"barras marcadas inválidas")));
+  cont.append(statCard("Latencia", ult ? fmtNum(Math.round(ult.du??0),0)+" s" : "–",
+      el("div",{class:"nota"},"última corrida "+(ult?ult.p:""))));
+
+  const lista = $("#listaCompletitud"); lista.textContent = "";
+  const orden = [...D.simbolos].sort((a,b) =>
+      a.va.reduce((x,y)=>x+y,0)/a.va.length - b.va.reduce((x,y)=>x+y,0)/b.va.length);
+  for(const s of orden){
+    const pc = 100*s.va.reduce((a,b)=>a+b,0)/s.va.length;
+    const item = el("div",{class:"itemCompletitud"});
+    const et = el("div",{class:"et"}); et.append(el("span",{class:"tick mono"},s.s), el("span",{class:"nom"}, nombreDe(s.s)||s.t));
+    const barra = el("div",{class:"barra"});
+    const fill = el("div"); fill.style.width = pc+"%"; if(pc < 98) fill.classList.add("baja");
+    barra.append(fill);
+    const estado = el("div",{class:"estado " + (pc>=98?"up":"")}, pc>=98 ? "OK" : "revisar");
+    if(pc<98) estado.style.color = "#b9862f";
+    item.append(et, barra, el("div",{class:"pc"}, fmtNum(pc,1)+" %"), estado);
+    lista.append(item);
+  }
   const tb = $("#tablaSalud tbody"); tb.textContent = "";
   for(const r of D.salud){
     const tr = el("tr");
@@ -423,48 +575,47 @@ function renderSalud(){
     tr.append(el("td",{}, String(r.ob ?? "–")));
     tr.append(el("td",{}, String(r.va ?? "–")));
     tr.append(el("td",{}, String(r.in ?? "–")));
-    tr.append(el("td",{class:"oc-movil"}, String(r.ca ?? "–")));
+    tr.append(el("td",{}, r.du!=null ? Math.round(r.du)+" s" : "–"));
     tb.append(tr);
   }
 }
+
+/* ---------- navegación ---------- */
+const PAGINAS = {
+  cartera:      ["Mi cartera", "Posiciones y valuación · IOL"],
+  inversiones:  ["Mis inversiones", "Detalle de posiciones y resultado"],
+  mercado:      ["Mercado", "EOD · dólar MEP"],
+  salud:        ["Salud de datos", "Ingesta y completitud del histórico"],
+};
 function renderVista(){
-  if(vista==="resumen"){ renderTiles(); renderPrincipal(); }
-  else if(vista==="precios") renderPrecios();
-  else if(vista==="mep") renderMep();
-  else if(vista==="instrumentos") renderInstrumentos();
+  if(vista==="cartera") renderCartera();
+  else if(vista==="inversiones") renderInversiones();
+  else if(vista==="mercado") renderMercado();
   else if(vista==="salud") renderSalud();
 }
 function cambiarVista(v){
   vista = v;
   document.querySelectorAll("#menu button").forEach(b => b.classList.toggle("activo", b.dataset.v===v));
   document.querySelectorAll("main section").forEach(s => s.classList.toggle("oculto", s.id !== "v-"+v));
+  $("#tituloPagina").textContent = PAGINAS[v][0];
+  $("#subPagina").textContent = PAGINAS[v][1];
   renderVista();
 }
 function arrancar(){
   $("#login").classList.add("oculto");
   $("#app").classList.remove("oculto");
-  $("#fGen").textContent = new Date(CFG.generado).toLocaleString("es-AR",
-      {dateStyle:"medium", timeStyle:"short"}) + " hs";
-  const sel = $("#selSimbolo");
-  D.simbolos.forEach(s => sel.append(el("option",{value:s.s}, s.s)));
-  sel.addEventListener("change", () => { simboloSel = sel.value; renderPrincipal(); });
-  $("#togSerie").querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
-    modoSerie = b.dataset.m;
-    $("#togSerie").querySelectorAll("button").forEach(x=>x.classList.remove("activo"));
-    b.classList.add("activo"); renderPrincipal();
+  aplicarTema(localStorage.getItem("tema") === "light" ? "light" : "dark");
+  $("#fGen").textContent = new Date(CFG.generado).toLocaleString("es-AR",{dateStyle:"medium", timeStyle:"short"});
+  $("#togVelas").querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+    modoVelas = b.dataset.m;
+    $("#togVelas").querySelectorAll("button").forEach(x=>x.classList.remove("activo"));
+    b.classList.add("activo"); renderVelas();
   }));
-  $("#togPrecios").querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
-    modoPrecios = b.dataset.m;
-    $("#togPrecios").querySelectorAll("button").forEach(x=>x.classList.remove("activo"));
-    b.classList.add("activo"); renderPrecios();
-  }));
-  $("#btnExcel").addEventListener("click", descargarXlsx);
   document.querySelectorAll("#menu button").forEach(b =>
-    b.addEventListener("click", () => cambiarVista(b.dataset.v)));
-  renderRangos();
-  renderInstrumentos();   // deja la tabla lista para la selección cruzada
-  cambiarVista("resumen");
+      b.addEventListener("click", () => cambiarVista(b.dataset.v)));
+  cambiarVista(posiciones().length ? "cartera" : "mercado");
   vigilarActualizaciones();
-  window.addEventListener("resize", () => renderVista());
+  let timer = null;
+  window.addEventListener("resize", () => { clearTimeout(timer); timer = setTimeout(renderVista, 150); });
 }
 intentarSesionGuardada().then(ok => { if(ok) arrancar(); });
