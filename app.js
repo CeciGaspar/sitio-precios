@@ -556,17 +556,22 @@ function renderRiesgo(){
   $("#pillRiesgo").textContent =
       `VaR histórico · ventana ${R.ventana_var} ruedas · MEP ${R.mep_par} · rf ${fmtNum(rf*100,1)} %`;
 
+  renderAlertas(R.alertas);
+
   const monto = f => (f!=null && valor!=null) ? monedaRiesgo() + fmtNum(f*valor, 0) : "–";
   const carta = (rot, fr, sub) => {
     const nota = el("div",{class:"nota mono"}, fr!=null ? fmtFrac(fr) + (sub ? " · " + sub : "") : (sub||""));
     return statCard(rot, monto(fr), nota);
   };
   if(C){
-    cont.append(carta("VaR 95 diario", C.var95, C.var95p!=null ? "paramétrico " + fmtFrac(C.var95p) : ""));
+    const contrastes = [C.var95p!=null ? "param. " + fmtFrac(C.var95p) : null,
+                        C.var95mc!=null ? "MC-t " + fmtFrac(C.var95mc) : null].filter(Boolean).join(" · ");
+    cont.append(carta("VaR 95 diario", C.var95, contrastes));
     cont.append(carta("CVaR 95 (Expected Shortfall)", C.cvar95, C.cvar99!=null ? "al 99: " + fmtFrac(C.cvar99) : ""));
-    const vol = statCard("Volatilidad 90d anualizada", C.vol.v90!=null ? fmtFrac(C.vol.v90,1) : "–",
-        el("div",{class:"nota mono"}, `30d ${fmtFrac(C.vol.v30,1)} · 252d ${fmtFrac(C.vol.v252,1)}`));
-    cont.append(vol);
+    const notaVol = [`30d ${fmtFrac(C.vol.v30,1)}`, `252d ${fmtFrac(C.vol.v252,1)}`,
+                     C.vol.ewma!=null ? `EWMA ${fmtFrac(C.vol.ewma,1)}` : null].filter(Boolean).join(" · ");
+    cont.append(statCard("Volatilidad 90d anualizada", C.vol.v90!=null ? fmtFrac(C.vol.v90,1) : "–",
+        el("div",{class:"nota mono"}, notaVol)));
     cont.append(statCard("Drawdown máximo", C.dd_max!=null ? fmtFrac(C.dd_max,1) : "–",
         el("div",{class:"nota mono"}, "en curso: " + fmtFrac(C.dd_actual,1))));
   }else{
@@ -595,6 +600,7 @@ function renderRiesgo(){
   }
 
   const pc = $("#panelCobertura"); pc.textContent = "";
+  const pcc = $("#panelComponentes"); pcc.textContent = "";
   if(R.cartera){
     const cob = R.cartera.cobertura;
     const barra = el("div",{class:"barraCob"});
@@ -605,6 +611,29 @@ function renderRiesgo(){
         R.cartera.sin_serie.length
           ? "Sin serie histórica (entran a valor constante, riesgo no modelado): " + R.cartera.sin_serie.join(", ")
           : "Todas las posiciones tienen serie histórica."));
+    const kp = C ? C.kupiec : null;
+    pc.append(el("div",{class:"tituloMini"},"Backtesting del VaR (Kupiec)"));
+    pc.append(el("div",{class:"notita", style:"margin-top:0"}, kp
+        ? `${kp.violaciones} violaciones en ${kp.n} ruedas (esperadas ${fmtNum(kp.esperadas,1)}) · ` +
+          (kp.ok ? "calibración aceptada" : "calibración RECHAZADA: recalibrar ventana o método")
+        : "historia común insuficiente para auditar (se necesitan ~220 ruedas)"));
+    const comp = (R.cartera.componentes||[]).filter(c => Math.abs(c.share) > 0.0005)
+        .sort((a,b) => b.share - a.share);
+    if(comp.length){
+      pcc.append(el("div",{class:"tituloMini"},"Participación en el riesgo de cola (CVaR 95)"));
+      const maxAbs = Math.max(...comp.map(c => Math.abs(c.share)));
+      for(const c of comp){
+        const fila = el("div",{class:"compFila"});
+        const pista = el("div",{class:"pista"});
+        const relleno = el("div"); relleno.style.width = (100*Math.abs(c.share)/maxAbs)+"%";
+        if(c.share < 0) relleno.classList.add("neg");
+        pista.append(relleno);
+        fila.append(el("span",{class:"et"},c.s), pista,
+                    el("span",{class:"pc"}, fmtFrac(c.share,1)));
+        pcc.append(fila);
+      }
+      pcc.append(el("div",{class:"notita"},"Participación negativa = diversifica en los días malos. Posiciones sin serie no participan."));
+    }
   }
 
   const tb = $("#tablaRiesgo tbody"); tb.textContent = "";
@@ -623,6 +652,26 @@ function renderRiesgo(){
   }
   $("#subRiesgoActivos").textContent = `${R.activos.length} instrumentos · medición en ${u==="usd"?"dólar MEP":"pesos"}`;
   renderHeatmap(R.correl);
+}
+
+function renderAlertas(alertas){
+  const cont = $("#alertasRiesgo"); cont.textContent = "";
+  const icono = () => { const s = svgEl("svg",{viewBox:"0 0 24 24"});
+    s.append(svgEl("path",{d:"M12 9v4M12 16.5h.01M10.3 4.2 2.8 18a2 2 0 0 0 1.7 3h15a2 2 0 0 0 1.7-3l-7.5-13.8a2 2 0 0 0-3.4 0z"}));
+    return s; };
+  const tilde = () => { const s = svgEl("svg",{viewBox:"0 0 24 24"});
+    s.append(svgEl("path",{d:"M20 6 9 17l-5-5"})); return s; };
+  if(!alertas || !alertas.length){
+    const fila = el("div",{class:"alerta ok"});
+    fila.append(tilde(), el("span",{},"Sin alertas: todas las métricas dentro de los umbrales definidos en la configuración."));
+    cont.append(fila);
+    return;
+  }
+  for(const a of alertas){
+    const fila = el("div",{class:"alerta "+a.nivel});
+    fila.append(icono(), el("span",{}, a.msg));
+    cont.append(fila);
+  }
 }
 
 function renderHeatmap(correl){
