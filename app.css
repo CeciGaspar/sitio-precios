@@ -171,6 +171,15 @@ svg text{font:10.5px "IBM Plex Mono",monospace;fill:var(--text-faint)}
 .leyendaDona .et{color:var(--text-dim)}
 .leyendaDona .pc{margin-left:auto;font-family:"IBM Plex Mono",monospace;color:var(--text)}
 
+/* ---- riesgo ---- */
+.filaControles{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.panelRatios{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.panelRatios .celda .r{color:var(--text-dim);font-size:11px;letter-spacing:.05em;text-transform:uppercase;margin-bottom:4px}
+.panelRatios .celda .v{font-family:"IBM Plex Mono",monospace;font-size:17px;font-weight:600}
+.barraCob{height:8px;border-radius:99px;background:var(--panel-2);overflow:hidden;margin:10px 0 8px}
+.barraCob div{height:100%;border-radius:99px;background:var(--accent)}
+#correlHeat svg{display:block}
+#correlHeat text.eje{font-size:9.5px}
 /* ---- salud ---- */
 .itemCompletitud{display:flex;align-items:center;gap:14px;padding:9px 2px;border-bottom:1px solid var(--border)}
 .itemCompletitud:last-child{border-bottom:0}

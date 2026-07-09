@@ -7,6 +7,7 @@ let CFG = null, BLOB = null, D = null;
 let vista = "cartera";
 let rangoCartera = 365, rangoVelas = 183;
 let simboloVelas = null, modoVelas = "c";
+let unidadRiesgo = "ars";
 
 /* ---------- utilidades y formato (es-AR, números en Plex Mono) ---------- */
 const $ = s => document.querySelector(s);
@@ -537,6 +538,124 @@ function renderTablaInstrumentos(){
   }
 }
 
+/* ---------- render: Riesgo ---------- */
+const fmtFrac = (v, dec=2) => v==null ? "–" : fmtNum(v*100, dec) + " %";
+const fmtRatio = v => v==null ? "–" : fmtNum(v, 2);
+function monedaRiesgo(){ return unidadRiesgo==="usd" ? "US$ " : "$ "; }
+
+function renderRiesgo(){
+  const R = D.riesgo;
+  const cont = $("#statsRiesgo"); cont.textContent = "";
+  if(!R){
+    cont.append(el("div",{class:"card stat"},"Sin datos de riesgo en esta corrida."));
+    return;
+  }
+  const u = unidadRiesgo, C = R.cartera ? R.cartera[u] : null;
+  const valor = R.cartera ? (u==="usd" ? R.cartera.valor_usd : R.cartera.valor_ars) : null;
+  const rf = R.rf[u];
+  $("#pillRiesgo").textContent =
+      `VaR histórico · ventana ${R.ventana_var} ruedas · MEP ${R.mep_par} · rf ${fmtNum(rf*100,1)} %`;
+
+  const monto = f => (f!=null && valor!=null) ? monedaRiesgo() + fmtNum(f*valor, 0) : "–";
+  const carta = (rot, fr, sub) => {
+    const nota = el("div",{class:"nota mono"}, fr!=null ? fmtFrac(fr) + (sub ? " · " + sub : "") : (sub||""));
+    return statCard(rot, monto(fr), nota);
+  };
+  if(C){
+    cont.append(carta("VaR 95 diario", C.var95, C.var95p!=null ? "paramétrico " + fmtFrac(C.var95p) : ""));
+    cont.append(carta("CVaR 95 (Expected Shortfall)", C.cvar95, C.cvar99!=null ? "al 99: " + fmtFrac(C.cvar99) : ""));
+    const vol = statCard("Volatilidad 90d anualizada", C.vol.v90!=null ? fmtFrac(C.vol.v90,1) : "–",
+        el("div",{class:"nota mono"}, `30d ${fmtFrac(C.vol.v30,1)} · 252d ${fmtFrac(C.vol.v252,1)}`));
+    cont.append(vol);
+    cont.append(statCard("Drawdown máximo", C.dd_max!=null ? fmtFrac(C.dd_max,1) : "–",
+        el("div",{class:"nota mono"}, "en curso: " + fmtFrac(C.dd_actual,1))));
+  }else{
+    cont.append(statCard("Cartera", "–", el("div",{class:"nota"},"sin snapshot de cartera en esta corrida")));
+  }
+
+  const pr = $("#panelRatios"); pr.textContent = "";
+  if(C){
+    const grilla = el("div",{class:"panelRatios"});
+    const celda = (r, v, clase) => { const c = el("div",{class:"celda"});
+      c.append(el("div",{class:"r"},r)); const vv = el("div",{class:"v "+(clase||"")}, v); c.append(vv); return c; };
+    const col = v => v==null ? "" : (v>=0 ? "up" : "down");
+    grilla.append(
+      celda("Ret. día", fmtFrac(C.ret.d), col(C.ret.d)),
+      celda("Ret. mes", fmtFrac(C.ret.m), col(C.ret.m)),
+      celda("Ret. año", fmtFrac(C.ret.a), col(C.ret.a)),
+      celda("Sharpe", fmtRatio(C.sharpe), col(C.sharpe)),
+      celda("Sortino", fmtRatio(C.sortino), col(C.sortino)),
+      celda("VaR 99 diario", C.var99!=null ? monto(C.var99) : "–"),
+    );
+    pr.append(grilla);
+    $("#subRatios").textContent = `Valor: ${monedaRiesgo()}${fmtNum(valor,0)} · retornos log agregados · rf anual ${fmtNum(rf*100,1)} %`;
+  }else{
+    $("#subRatios").textContent = "";
+    pr.append(el("div",{class:"notita"},"Sin cartera para calcular ratios."));
+  }
+
+  const pc = $("#panelCobertura"); pc.textContent = "";
+  if(R.cartera){
+    const cob = R.cartera.cobertura;
+    const barra = el("div",{class:"barraCob"});
+    const fill = el("div"); fill.style.width = (100*cob)+"%"; barra.append(fill);
+    pc.append(el("div",{class:"valor mono", style:"font-size:22px;font-weight:600"}, fmtFrac(cob,1)));
+    pc.append(barra);
+    pc.append(el("div",{class:"notita"},
+        R.cartera.sin_serie.length
+          ? "Sin serie histórica (entran a valor constante, riesgo no modelado): " + R.cartera.sin_serie.join(", ")
+          : "Todas las posiciones tienen serie histórica."));
+  }
+
+  const tb = $("#tablaRiesgo tbody"); tb.textContent = "";
+  const orden = [...R.activos].sort((a,b) => (b[u].var95 ?? -1) - (a[u].var95 ?? -1));
+  for(const a of orden){
+    const m = a[u], tr = el("tr");
+    const c1 = el("td"); c1.append(el("span",{class:"tick mono"},a.s), el("span",{class:"nom"}, nombreDe(a.s)||"")); tr.append(c1);
+    tr.append(el("td",{}, fmtFrac(m.vol.v90,1)));
+    tr.append(el("td",{}, fmtFrac(m.var95)));
+    tr.append(el("td",{}, fmtFrac(m.cvar95)));
+    tr.append(el("td",{}, fmtFrac(m.var99)));
+    tr.append(el("td",{}, fmtFrac(m.dd_max,1)));
+    const sh = el("td",{}, fmtRatio(m.sharpe)); sh.className = m.sharpe==null ? "" : (m.sharpe>=0?"up":"down");
+    tr.append(sh);
+    tb.append(tr);
+  }
+  $("#subRiesgoActivos").textContent = `${R.activos.length} instrumentos · medición en ${u==="usd"?"dólar MEP":"pesos"}`;
+  renderHeatmap(R.correl);
+}
+
+function renderHeatmap(correl){
+  const cont = $("#correlHeat"); cont.textContent = "";
+  const s = correl.s, m = correl.m;
+  if(!s.length){ cont.append(el("div",{class:"notita"},"Sin ruedas comunes suficientes para correlacionar.")); return; }
+  const celda = 24, margen = 52, n = s.length;
+  const tam = margen + n*celda + 6;
+  const svg = svgEl("svg", {viewBox:`0 0 ${tam} ${tam}`, width:Math.min(tam, 640)});
+  const colorDe = v => {
+    const t = Math.min(Math.abs(v), 1);
+    return v >= 0 ? `color-mix(in srgb, var(--accent) ${Math.round(t*85)}%, var(--panel-2))`
+                  : `color-mix(in srgb, var(--down) ${Math.round(t*85)}%, var(--panel-2))`;
+  };
+  for(let i=0;i<n;i++){
+    const ty = svgEl("text", {x:margen-6, y:margen + i*celda + celda/2 + 3.5, "text-anchor":"end", class:"eje"});
+    ty.textContent = s[i]; svg.append(ty);
+    const tx = svgEl("text", {x:margen + i*celda + celda/2, y:margen-8, "text-anchor":"start", class:"eje",
+                              transform:`rotate(-45 ${margen + i*celda + celda/2} ${margen-8})`});
+    tx.textContent = s[i]; svg.append(tx);
+    for(let j=0;j<n;j++){
+      const r = svgEl("rect", {x:margen + j*celda + 1, y:margen + i*celda + 1,
+                               width:celda-2, height:celda-2, rx:3});
+      r.style.fill = colorDe(m[i][j]);
+      const titulo = NS("title");
+      titulo.textContent = `${s[i]} × ${s[j]}: ${fmtNum(m[i][j],2)}`;
+      r.append(titulo);
+      svg.append(r);
+    }
+  }
+  cont.append(svg);
+}
+
 /* ---------- render: Salud ---------- */
 function renderSalud(){
   const cont = $("#statsSalud"); cont.textContent = "";
@@ -585,12 +704,14 @@ const PAGINAS = {
   cartera:      ["Mi cartera", "Posiciones y valuación · IOL"],
   inversiones:  ["Mis inversiones", "Detalle de posiciones y resultado"],
   mercado:      ["Mercado", "EOD · dólar MEP"],
+  riesgo:       ["Riesgo", "VaR, CVaR, volatilidad y correlaciones · en pesos y dólar MEP"],
   salud:        ["Salud de datos", "Ingesta y completitud del histórico"],
 };
 function renderVista(){
   if(vista==="cartera") renderCartera();
   else if(vista==="inversiones") renderInversiones();
   else if(vista==="mercado") renderMercado();
+  else if(vista==="riesgo") renderRiesgo();
   else if(vista==="salud") renderSalud();
 }
 function cambiarVista(v){
@@ -610,6 +731,11 @@ function arrancar(){
     modoVelas = b.dataset.m;
     $("#togVelas").querySelectorAll("button").forEach(x=>x.classList.remove("activo"));
     b.classList.add("activo"); renderVelas();
+  }));
+  $("#togUnidad").querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+    unidadRiesgo = b.dataset.u;
+    $("#togUnidad").querySelectorAll("button").forEach(x=>x.classList.remove("activo"));
+    b.classList.add("activo"); renderRiesgo();
   }));
   document.querySelectorAll("#menu button").forEach(b =>
       b.addEventListener("click", () => cambiarVista(b.dataset.v)));

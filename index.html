@@ -46,6 +46,7 @@
       <button data-v="cartera" class="activo"><svg viewBox="0 0 24 24"><path d="M20 7H5a2 2 0 0 1-2-2 2 2 0 0 1 2-2h13v4"/><path d="M3 5v13a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1"/><path d="M16 13.5h.01"/></svg>Mi cartera</button>
       <button data-v="inversiones"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg>Mis inversiones</button>
       <button data-v="mercado"><svg viewBox="0 0 24 24"><path d="M3 17l5.5-5.5 4 4L21 7"/><path d="M15.5 7H21v5.5"/></svg>Mercado</button>
+      <button data-v="riesgo"><svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.2 7.6-8 9-4.8-1.4-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4.5"/></svg>Riesgo</button>
       <button data-v="salud"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 8-6-16-3 8H2"/></svg>Salud de datos</button>
     </nav>
     <div class="pieNav">
@@ -133,6 +134,38 @@
           <thead><tr><th>Ticker</th><th>Último</th><th>Var. día</th><th>30 ruedas</th><th>Vol.</th></tr></thead>
           <tbody></tbody>
         </table></div>
+      </div>
+    </section>
+
+    <section id="v-riesgo" class="oculto">
+      <div class="filaControles">
+        <div class="toggle" id="togUnidad">
+          <button data-u="ars" class="activo">Pesos</button><button data-u="usd">Dólar MEP</button>
+        </div>
+        <span class="pill mono" id="pillRiesgo"></span>
+      </div>
+      <div class="grid4" id="statsRiesgo"></div>
+      <div class="grid2">
+        <div class="card">
+          <div class="cardHead"><div><h3>Cartera: retornos y ratios</h3><div class="sub" id="subRatios"></div></div></div>
+          <div id="panelRatios"></div>
+        </div>
+        <div class="card">
+          <div class="cardHead"><div><h3>Cobertura del modelo</h3><div class="sub">Parte de la cartera con serie histórica para modelar</div></div></div>
+          <div id="panelCobertura"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="cardHead"><div><h3>Riesgo por activo</h3><div class="sub" id="subRiesgoActivos"></div></div></div>
+        <div class="marcoTabla"><table id="tablaRiesgo">
+          <thead><tr><th>Activo</th><th>Vol. 90d</th><th>VaR 95</th><th>CVaR 95</th><th>VaR 99</th><th>DD máx.</th><th>Sharpe</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <div class="notita">VaR y CVaR diarios por método histórico (percentil empírico). Volatilidad anualizada (√252). Drawdown sobre el histórico completo.</div>
+      </div>
+      <div class="card">
+        <div class="cardHead"><div><h3>Matriz de correlaciones</h3><div class="sub">Retornos diarios en pesos, últimas 252 ruedas comunes · activos que se mueven juntos son una sola apuesta</div></div></div>
+        <div id="correlHeat" style="overflow-x:auto"></div>
       </div>
     </section>
 
