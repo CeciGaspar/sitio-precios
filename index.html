@@ -47,6 +47,7 @@
       <button data-v="inversiones"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg>Mis inversiones</button>
       <button data-v="mercado"><svg viewBox="0 0 24 24"><path d="M3 17l5.5-5.5 4 4L21 7"/><path d="M15.5 7H21v5.5"/></svg>Mercado</button>
       <button data-v="riesgo"><svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.2 7.6-8 9-4.8-1.4-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4.5"/></svg>Riesgo</button>
+      <button data-v="estrategia"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><path d="M12 11.99h.01"/></svg>Estrategia</button>
       <button data-v="salud"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 8-6-16-3 8H2"/></svg>Salud de datos</button>
     </nav>
     <div class="pieNav">
@@ -168,6 +169,44 @@
       <div class="card">
         <div class="cardHead"><div><h3>Matriz de correlaciones</h3><div class="sub">Retornos diarios en pesos, últimas 252 ruedas comunes · activos que se mueven juntos son una sola apuesta</div></div></div>
         <div id="correlHeat" style="overflow-x:auto"></div>
+      </div>
+    </section>
+
+    <section id="v-estrategia" class="oculto">
+      <div class="grid4" id="statsEstrategia"></div>
+      <div class="card">
+        <div class="cardHead">
+          <div><h3>La simulación: $ 100 invertidos en cada alternativa</h3>
+          <div class="sub" id="subBacktest">Cuánto habrían crecido $ 100 siguiendo cada camino, con datos reales y descontando comisiones (escala logarítmica: cada línea de la grilla multiplica el valor)</div></div>
+        </div>
+        <div id="chartBacktest"></div>
+        <div class="leyenda" id="legBacktest"></div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <div class="cardHead"><div><h3>El veredicto, alternativa por alternativa</h3>
+            <div class="sub">Ganancia anual promedio, ganancia por unidad de susto (Sharpe) y peor caída de cada camino</div></div></div>
+          <div class="marcoTabla"><table id="tablaVeredicto">
+            <thead><tr><th>Alternativa</th><th>Ganancia anual</th><th>Sharpe</th><th>Sortino</th><th>Peor caída</th></tr></thead>
+            <tbody></tbody>
+          </table></div>
+          <div class="notita" id="notaVeredicto"></div>
+        </div>
+        <div class="card">
+          <div class="cardHead"><div><h3>La estrategia, año por año</h3>
+            <div class="sub">Consistencia: cómo le fue al rebalanceo en cada año calendario</div></div></div>
+          <div id="retornosAnio"></div>
+          <div class="tituloMini">Parámetros de la simulación</div>
+          <div class="notita" id="paramsBacktest"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="cardHead"><div><h3>Operaciones simuladas</h3>
+          <div class="sub">Cada vez que la cartera se desvió más que la banda y el sistema rebalanceó (pagando comisiones)</div></div></div>
+        <div class="marcoTabla"><table id="tablaOps">
+          <thead><tr><th>Fecha</th><th>Desvío</th><th>% girado</th><th>Costo pagado</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
       </div>
     </section>
 

@@ -705,6 +705,156 @@ function renderHeatmap(correl){
   cont.append(svg);
 }
 
+/* ---------- render: Estrategia ---------- */
+const SERIES_BT = {
+  estrategia: ["Rebalanceo (la estrategia)", "var(--accent)"],
+  buy_hold:   ["Comprar y no tocar (60/30/10)", "#4f8ef7"],
+  acciones:   ["Todo acciones", "#e6b455"],
+  renta_fija: ["Todo bonos", "#b48ef7"],
+  dolar_mep:  ["Comprar dólar MEP", "#f0685a"],
+  liquidez:   ["Efectivo", "#8a93a6"],
+};
+const fmtCompacto = v => v>=1e6 ? fmtNum(v/1e6,1)+" M" : v>=1e3 ? fmtNum(v/1e3,1)+" k" : fmtNum(v,0);
+
+function chartComparativo(cont, dias, series){   // series: [{nombre,color,vals}]
+  cont.textContent = "";
+  if(!dias.length) return;
+  const ancho = Math.max(cont.clientWidth || 860, 320), alto = 340;
+  const M = {t:14, r:16, b:26, l:58};
+  const logs = series.flatMap(s => s.vals.map(v => Math.log10(Math.max(v, 1e-6))));
+  let y0 = Math.min(...logs), y1 = Math.max(...logs);
+  const mg = (y1-y0)*0.05 || 0.1; y0 -= mg; y1 += mg;
+  const x0 = dias[0], x1 = dias[dias.length-1];
+  const X = d => M.l + (d-x0)/(x1-x0||1)*(ancho-M.l-M.r);
+  const Y = v => alto-M.b - (Math.log10(Math.max(v,1e-6))-y0)/(y1-y0||1)*(alto-M.t-M.b);
+  const svg = svgEl("svg", {viewBox:`0 0 ${ancho} ${alto}`, width:"100%"});
+  for(const t of ticksLindos(y0, y1, 5)){
+    const yPix = alto-M.b - (t-y0)/(y1-y0||1)*(alto-M.t-M.b);
+    svg.append(svgEl("line", {x1:M.l, x2:ancho-M.r, y1:yPix, y2:yPix, stroke:"var(--border)"}));
+    const tx = svgEl("text", {x:M.l-8, y:yPix+3.5, "text-anchor":"end"});
+    tx.textContent = "$ " + fmtCompacto(Math.pow(10, t)); svg.append(tx);
+  }
+  const nX = Math.min(6, Math.max(2, Math.floor(ancho/160)));
+  for(let i=0;i<=nX;i++){
+    const d = x0 + (x1-x0)*i/nX;
+    const tx = svgEl("text", {x:X(d), y:alto-8, "text-anchor": i===0?"start":(i===nX?"end":"middle")});
+    tx.textContent = fmtFecha(d); svg.append(tx);
+  }
+  for(const s of series){
+    const p = svgEl("path", {fill:"none", "stroke-width": s.nombre==="estrategia" ? "2.4" : "1.6",
+                             "stroke-linecap":"round", "stroke-linejoin":"round"});
+    p.setAttribute("d", s.vals.map((v,i)=>(i?"L":"M")+X(dias[i]).toFixed(1)+" "+Y(v).toFixed(1)).join(""));
+    p.style.stroke = s.color;
+    if(s.nombre !== "estrategia") p.setAttribute("opacity", ".8");
+    svg.append(p);
+  }
+  const cross = svgEl("line", {y1:M.t, y2:alto-M.b, stroke:"var(--border-strong)", "stroke-dasharray":"3 3"});
+  cross.style.display="none"; svg.append(cross);
+  const tip = el("div",{class:"tooltip oculto"});
+  cont.style.position = "relative"; cont.append(svg, tip);
+  svg.addEventListener("pointermove", ev => {
+    const r = svg.getBoundingClientRect();
+    const dx = x0 + ((ev.clientX-r.left)*(ancho/r.width)-M.l)/(ancho-M.l-M.r)*(x1-x0);
+    let mejor=0, dist=Infinity;
+    dias.forEach((d,i)=>{ const dd=Math.abs(d-dx); if(dd<dist){dist=dd;mejor=i;} });
+    cross.setAttribute("x1",X(dias[mejor])); cross.setAttribute("x2",X(dias[mejor])); cross.style.display="";
+    tip.textContent=""; tip.classList.remove("oculto");
+    tip.append(el("div",{class:"tfecha"}, fmtFechaLarga(dias[mejor])));
+    for(const s of [...series].sort((a,b)=>b.vals[mejor]-a.vals[mejor])){
+      const fila = el("div",{class:"fila"});
+      const et = el("span",{}); const sw = el("span",{class:"clave"}); sw.style.borderTopColor = s.color;
+      et.append(sw, document.createTextNode(" "+s.etiqueta));
+      fila.append(et, el("span",{}, "$ "+fmtCompacto(s.vals[mejor])));
+      tip.append(fila);
+    }
+    const px = (X(dias[mejor])/ancho)*r.width, tw = tip.offsetWidth;
+    tip.style.left = Math.min(Math.max(px+14,4), r.width-tw-4)+"px"; tip.style.top = "8px";
+  });
+  svg.addEventListener("pointerleave", () => { cross.style.display="none"; tip.classList.add("oculto"); });
+}
+
+function renderEstrategia(){
+  const E = D.estrategia;
+  const cont = $("#statsEstrategia"); cont.textContent = "";
+  if(!E){
+    cont.append(el("div",{class:"card stat"},"Sin backtest en esta corrida (falta historia común suficiente)."));
+    return;
+  }
+  const m = E.metricas, me = m.estrategia, mb = m.buy_hold;
+  const rivales = Object.keys(m).filter(n => n !== "estrategia");
+  const badge = el("span",{class:"badge "+(E.go ? "OK" : "ERROR")}, E.go ? "GO" : "NO-GO");
+  cont.append(statCard("Veredicto", badge,
+      el("div",{class:"nota"}, `le gana a ${E.supera_a.length} de ${rivales.length} alternativas (vara: ganancia pura)`)));
+  cont.append(statCard("Ganancia anual", me.ret_anual!=null ? fmtFrac(me.ret_anual,1) : "–",
+      el("div",{class:"nota mono"}, mb.ret_anual!=null ? "no tocar nada: "+fmtFrac(mb.ret_anual,1) : "")));
+  cont.append(statCard("Sharpe (ganancia por susto)", me.sharpe!=null ? fmtRatio(me.sharpe) : "–",
+      el("div",{class:"nota mono"}, mb.sharpe!=null ? "no tocar nada: "+fmtRatio(mb.sharpe) : "")));
+  cont.append(statCard("Peor caída", me.dd_max!=null ? fmtFrac(me.dd_max,1) : "–",
+      el("div",{class:"nota mono"}, mb.dd_max!=null ? "no tocar nada: "+fmtFrac(mb.dd_max,1) : "")));
+
+  const series = Object.entries(E.series)
+      .filter(([n]) => SERIES_BT[n])
+      .map(([n, vals]) => ({nombre:n, etiqueta:SERIES_BT[n][0], color:SERIES_BT[n][1], vals}));
+  chartComparativo($("#chartBacktest"), E.d, series);
+  const leg = $("#legBacktest"); leg.textContent = "";
+  series.forEach(s => { const it = el("span");
+    const k = el("span",{class:"clave"}); k.style.borderTopColor = s.color;
+    it.append(k, document.createTextNode(" "+s.etiqueta)); leg.append(it); });
+  $("#subBacktest").textContent =
+      `Cuánto habrían crecido $ 100 desde ${E.desde} hasta ${E.hasta} (${E.ruedas} ruedas), en ` +
+      (E.unidad==="ARS"?"pesos":"dólar MEP") +
+      `, descontando comisiones. Escala logarítmica: cada línea de la grilla multiplica el valor.`;
+
+  const tb = $("#tablaVeredicto tbody"); tb.textContent = "";
+  const orden = Object.entries(m).sort((a,b) => (b[1].ret_anual ?? -9) - (a[1].ret_anual ?? -9));
+  for(const [n, mm] of orden){
+    const tr = el("tr");
+    const c1 = el("td");
+    const sw = el("span",{class:"clave"}); sw.style.borderTopColor = SERIES_BT[n] ? SERIES_BT[n][1] : "var(--text-faint)";
+    c1.append(sw, document.createTextNode(" " + (SERIES_BT[n] ? SERIES_BT[n][0] : n)));
+    if(n === "estrategia") c1.style.fontWeight = "600";
+    tr.append(c1);
+    tr.append(el("td",{}, mm.ret_anual!=null ? fmtFrac(mm.ret_anual,1) : "–"));
+    tr.append(el("td",{}, fmtRatio(mm.sharpe)));
+    tr.append(el("td",{}, fmtRatio(mm.sortino)));
+    tr.append(el("td",{}, mm.dd_max!=null ? fmtFrac(mm.dd_max,1) : "–"));
+    tb.append(tr);
+  }
+  $("#notaVeredicto").textContent =
+      "La estrategia ganó menos que dejar todo quieto, pero con mejor ganancia-por-susto y caídas más suaves. " +
+      "Con la vara de ganancia pura (perfil agresivo), el veredicto es " + (E.go ? "GO" : "NO-GO") + ".";
+
+  const ra = $("#retornosAnio"); ra.textContent = "";
+  for(const f of E.por_anio){
+    const fila = el("div",{class:"compFila"});
+    fila.append(el("span",{class:"et"}, String(f.anio)));
+    const pista = el("div",{class:"pista"});
+    const maxAbs = Math.max(...E.por_anio.map(x => Math.abs(x.ret)));
+    const relleno = el("div"); relleno.style.width = (100*Math.abs(f.ret)/(maxAbs||1))+"%";
+    if(f.ret < 0) relleno.classList.add("neg");
+    pista.append(relleno);
+    const pc = el("span",{class:"pc "+(f.ret>=0?"up":"down")}, fmtPct(f.ret*100,1));
+    fila.append(pista, pc);
+    ra.append(fila);
+  }
+  const obj = E.objetivo;
+  $("#paramsBacktest").textContent =
+      `Cartera objetivo: ${fmtNum(obj.acciones*100,0)}% acciones · ${fmtNum(obj.renta_fija*100,0)}% bonos · ` +
+      `${fmtNum(obj.liquidez*100,0)}% efectivo · banda ±${fmtNum(E.banda_pp,0)} pp · ` +
+      `costo por operación ${fmtNum(E.costo_lado_pct,2)}% por punta · ${E.operaciones.length} operaciones en todo el período · ` +
+      `unidad de cuenta: ${E.unidad==="ARS"?"pesos":"dólar MEP"} (decisión del equipo).`;
+
+  const to = $("#tablaOps tbody"); to.textContent = "";
+  for(const op of [...E.operaciones].reverse()){
+    const tr = el("tr");
+    tr.append(el("td",{}, fmtFechaLarga(op.dia)));
+    tr.append(el("td",{}, fmtFrac(op.desvio,1)));
+    tr.append(el("td",{}, fmtFrac(op.turnover,1)));
+    tr.append(el("td",{}, op.costo_pct!=null ? fmtFrac(op.costo_pct,2) + " de la cartera" : "–"));
+    to.append(tr);
+  }
+}
+
 /* ---------- render: Salud ---------- */
 function renderSalud(){
   const cont = $("#statsSalud"); cont.textContent = "";
@@ -754,6 +904,7 @@ const PAGINAS = {
   inversiones:  ["Mis inversiones", "Detalle de posiciones y resultado"],
   mercado:      ["Mercado", "EOD · dólar MEP"],
   riesgo:       ["Riesgo", "VaR, CVaR, volatilidad y correlaciones · en pesos y dólar MEP"],
+  estrategia:   ["Estrategia", "Rebalanceo por bandas · simulación contra las alternativas simples"],
   salud:        ["Salud de datos", "Ingesta y completitud del histórico"],
 };
 function renderVista(){
@@ -761,6 +912,7 @@ function renderVista(){
   else if(vista==="inversiones") renderInversiones();
   else if(vista==="mercado") renderMercado();
   else if(vista==="riesgo") renderRiesgo();
+  else if(vista==="estrategia") renderEstrategia();
   else if(vista==="salud") renderSalud();
 }
 function cambiarVista(v){
