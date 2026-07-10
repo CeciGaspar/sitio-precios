@@ -706,13 +706,17 @@ function renderHeatmap(correl){
 }
 
 /* ---------- render: Estrategia ---------- */
+let estrategiaSel = "rebalanceo";
+const ESTRATEGIAS_BT = ["rebalanceo", "momentum", "reversion"];
 const SERIES_BT = {
-  estrategia: ["Rebalanceo (la estrategia)", "var(--accent)"],
-  buy_hold:   ["Comprar y no tocar (60/30/10)", "#4f8ef7"],
+  rebalanceo: ["Rebalanceo (mantener 60/30/10)", "var(--accent)"],
+  momentum:   ["Momentum (seguir la tendencia)", "#4f8ef7"],
+  reversion:  ["Reversión (comprar lo castigado)", "#b48ef7"],
+  buy_hold:   ["Comprar y no tocar (60/30/10)", "#8a93a6"],
   acciones:   ["Todo acciones", "#e6b455"],
-  renta_fija: ["Todo bonos", "#b48ef7"],
+  renta_fija: ["Todo bonos", "#f18fc2"],
   dolar_mep:  ["Comprar dólar MEP", "#f0685a"],
-  liquidez:   ["Efectivo", "#8a93a6"],
+  liquidez:   ["Efectivo", "#606762"],
 };
 const fmtCompacto = v => v>=1e6 ? fmtNum(v/1e6,1)+" M" : v>=1e3 ? fmtNum(v/1e3,1)+" k" : fmtNum(v,0);
 
@@ -741,11 +745,11 @@ function chartComparativo(cont, dias, series){   // series: [{nombre,color,vals}
     tx.textContent = fmtFecha(d); svg.append(tx);
   }
   for(const s of series){
-    const p = svgEl("path", {fill:"none", "stroke-width": s.nombre==="estrategia" ? "2.4" : "1.6",
+    const p = svgEl("path", {fill:"none", "stroke-width": s.gruesa ? "2.2" : "1.4",
                              "stroke-linecap":"round", "stroke-linejoin":"round"});
     p.setAttribute("d", s.vals.map((v,i)=>(i?"L":"M")+X(dias[i]).toFixed(1)+" "+Y(v).toFixed(1)).join(""));
     p.style.stroke = s.color;
-    if(s.nombre !== "estrategia") p.setAttribute("opacity", ".8");
+    if(!s.gruesa) p.setAttribute("opacity", ".75");
     svg.append(p);
   }
   const cross = svgEl("line", {y1:M.t, y2:alto-M.b, stroke:"var(--border-strong)", "stroke-dasharray":"3 3"});
@@ -780,21 +784,29 @@ function renderEstrategia(){
     cont.append(el("div",{class:"card stat"},"Sin backtest en esta corrida (falta historia común suficiente)."));
     return;
   }
-  const m = E.metricas, me = m.estrategia, mb = m.buy_hold;
-  const rivales = Object.keys(m).filter(n => n !== "estrategia");
-  const badge = el("span",{class:"badge "+(E.go ? "OK" : "ERROR")}, E.go ? "GO" : "NO-GO");
-  cont.append(statCard("Veredicto", badge,
-      el("div",{class:"nota"}, `le gana a ${E.supera_a.length} de ${rivales.length} alternativas (vara: ganancia pura)`)));
-  cont.append(statCard("Ganancia anual", me.ret_anual!=null ? fmtFrac(me.ret_anual,1) : "–",
-      el("div",{class:"nota mono"}, mb.ret_anual!=null ? "no tocar nada: "+fmtFrac(mb.ret_anual,1) : "")));
-  cont.append(statCard("Sharpe (ganancia por susto)", me.sharpe!=null ? fmtRatio(me.sharpe) : "–",
-      el("div",{class:"nota mono"}, mb.sharpe!=null ? "no tocar nada: "+fmtRatio(mb.sharpe) : "")));
-  cont.append(statCard("Peor caída", me.dd_max!=null ? fmtFrac(me.dd_max,1) : "–",
-      el("div",{class:"nota mono"}, mb.dd_max!=null ? "no tocar nada: "+fmtFrac(mb.dd_max,1) : "")));
+  const m = E.metricas;
+  for(const n of ESTRATEGIAS_BT){
+    const e = E.estrategias[n]; if(!e) continue;
+    const badge = el("span",{class:"badge "+(e.go ? "OK" : "ERROR")}, e.go ? "GO" : "NO-GO");
+    const valor = el("span");
+    valor.append(badge, document.createTextNode(" "),
+        el("span",{class:"mono", style:"font-size:16px;margin-left:6px"},
+           m[n].ret_anual!=null ? fmtFrac(m[n].ret_anual,1) : "–"));
+    cont.append(statCard(SERIES_BT[n][0], valor,
+        el("div",{class:"nota"}, `le gana a ${e.supera_a.length} de 5 alternativas · ${e.n_ops} operaciones`)));
+  }
+  const mejorBench = Object.entries(m)
+      .filter(([n]) => !ESTRATEGIAS_BT.includes(n))
+      .sort((a,b) => (b[1].ret_anual ?? -9) - (a[1].ret_anual ?? -9))[0];
+  if(mejorBench){
+    cont.append(statCard("La vara a vencer", mejorBench[1].ret_anual!=null ? fmtFrac(mejorBench[1].ret_anual,1) : "–",
+        el("div",{class:"nota"}, SERIES_BT[mejorBench[0]][0] + " · vara: ganancia pura (perfil agresivo)")));
+  }
 
   const series = Object.entries(E.series)
       .filter(([n]) => SERIES_BT[n])
-      .map(([n, vals]) => ({nombre:n, etiqueta:SERIES_BT[n][0], color:SERIES_BT[n][1], vals}));
+      .map(([n, vals]) => ({nombre:n, etiqueta:SERIES_BT[n][0], color:SERIES_BT[n][1], vals,
+                            gruesa: ESTRATEGIAS_BT.includes(n)}));
   chartComparativo($("#chartBacktest"), E.d, series);
   const leg = $("#legBacktest"); leg.textContent = "";
   series.forEach(s => { const it = el("span");
@@ -812,7 +824,7 @@ function renderEstrategia(){
     const c1 = el("td");
     const sw = el("span",{class:"clave"}); sw.style.borderTopColor = SERIES_BT[n] ? SERIES_BT[n][1] : "var(--text-faint)";
     c1.append(sw, document.createTextNode(" " + (SERIES_BT[n] ? SERIES_BT[n][0] : n)));
-    if(n === "estrategia") c1.style.fontWeight = "600";
+    if(ESTRATEGIAS_BT.includes(n)) c1.style.fontWeight = "600";
     tr.append(c1);
     tr.append(el("td",{}, mm.ret_anual!=null ? fmtFrac(mm.ret_anual,1) : "–"));
     tr.append(el("td",{}, fmtRatio(mm.sharpe)));
@@ -821,35 +833,57 @@ function renderEstrategia(){
     tb.append(tr);
   }
   $("#notaVeredicto").textContent =
-      "La estrategia ganó menos que dejar todo quieto, pero con mejor ganancia-por-susto y caídas más suaves. " +
-      "Con la vara de ganancia pura (perfil agresivo), el veredicto es " + (E.go ? "GO" : "NO-GO") + ".";
+      "Ninguna estrategia le ganó a todas las alternativas simples en ganancia pura: en un mercado que subió " +
+      "casi sin parar, es muy difícil ganarle a estar siempre comprado. El rebalanceo y el momentum igual dieron " +
+      "viajes más tranquilos (mejor Sharpe o menor caída).";
+
+  renderDetalleEstrategia();
+}
+
+function renderDetalleEstrategia(){
+  const E = D.estrategia; if(!E) return;
+  const n = estrategiaSel, e = E.estrategias[n], p = E.params;
+  $("#selEstrategiaDetalle").querySelectorAll("button").forEach(b =>
+      b.classList.toggle("activo", b.dataset.e === n));
+  $("#subDetalle").textContent = SERIES_BT[n][0];
 
   const ra = $("#retornosAnio"); ra.textContent = "";
-  for(const f of E.por_anio){
+  const maxAbs = Math.max(...e.por_anio.map(x => Math.abs(x.ret)), 0.0001);
+  for(const f of e.por_anio){
     const fila = el("div",{class:"compFila"});
     fila.append(el("span",{class:"et"}, String(f.anio)));
     const pista = el("div",{class:"pista"});
-    const maxAbs = Math.max(...E.por_anio.map(x => Math.abs(x.ret)));
-    const relleno = el("div"); relleno.style.width = (100*Math.abs(f.ret)/(maxAbs||1))+"%";
+    const relleno = el("div"); relleno.style.width = (100*Math.abs(f.ret)/maxAbs)+"%";
     if(f.ret < 0) relleno.classList.add("neg");
     pista.append(relleno);
-    const pc = el("span",{class:"pc "+(f.ret>=0?"up":"down")}, fmtPct(f.ret*100,1));
-    fila.append(pista, pc);
+    fila.append(pista, el("span",{class:"pc "+(f.ret>=0?"up":"down")}, fmtPct(f.ret*100,1)));
     ra.append(fila);
   }
-  const obj = E.objetivo;
-  $("#paramsBacktest").textContent =
-      `Cartera objetivo: ${fmtNum(obj.acciones*100,0)}% acciones · ${fmtNum(obj.renta_fija*100,0)}% bonos · ` +
-      `${fmtNum(obj.liquidez*100,0)}% efectivo · banda ±${fmtNum(E.banda_pp,0)} pp · ` +
-      `costo por operación ${fmtNum(E.costo_lado_pct,2)}% por punta · ${E.operaciones.length} operaciones en todo el período · ` +
-      `unidad de cuenta: ${E.unidad==="ARS"?"pesos":"dólar MEP"} (decisión del equipo).`;
 
+  const obj = p.objetivo;
+  const reglas = {
+    rebalanceo: `Mantener ${fmtNum(obj.acciones*100,0)}% acciones · ${fmtNum(obj.renta_fija*100,0)}% bonos · ` +
+        `${fmtNum(obj.liquidez*100,0)}% efectivo; si algo se desvía más de ±${fmtNum(p.banda_pp,0)} puntos, ` +
+        `se vende lo que sobra y se compra lo que falta.`,
+    momentum: `Estar comprado en acciones mientras el promedio de los últimos ${p.momentum.rapida} días esté por ` +
+        `encima del de ${p.momentum.lenta}; cuando la tendencia se quiebra, pasar todo a efectivo.`,
+    reversion: `Comprar acciones cuando el índice está muy castigado respecto de su propio promedio de ` +
+        `${p.reversion.ventana} días (z-score ≤ -${p.reversion.z_entrada}); vender al volver al promedio, ` +
+        `con stop loss del ${fmtNum(p.reversion.stop_perdida_pct,0)}% (si sigue cayendo, salir igual).`,
+  };
+  $("#paramsBacktest").textContent = reglas[n] +
+      ` Costo por operación: ${fmtNum(p.costo_lado_pct,2)}% por punta. Parámetros fijados de antemano, sin calibrar sobre los datos.`;
+
+  $("#subOps").textContent = `Las ${e.n_ops} decisiones que tomó "${SERIES_BT[n][0]}" en la simulación`;
   const to = $("#tablaOps tbody"); to.textContent = "";
-  for(const op of [...E.operaciones].reverse()){
+  for(const op of [...e.ops].reverse()){
     const tr = el("tr");
     tr.append(el("td",{}, fmtFechaLarga(op.dia)));
-    tr.append(el("td",{}, fmtFrac(op.desvio,1)));
-    tr.append(el("td",{}, fmtFrac(op.turnover,1)));
+    const que = op.accion
+        ? op.accion
+        : `rebalanceó (desvío ${fmtFrac(op.desvio,1)}, giró ${fmtFrac(op.turnover,1)} de la cartera)`;
+    const tdQue = el("td",{}, que); tdQue.style.fontFamily = "inherit"; tdQue.style.textAlign = "left";
+    tr.append(tdQue);
     tr.append(el("td",{}, op.costo_pct!=null ? fmtFrac(op.costo_pct,2) + " de la cartera" : "–"));
     to.append(tr);
   }
@@ -937,6 +971,9 @@ function arrancar(){
     unidadRiesgo = b.dataset.u;
     $("#togUnidad").querySelectorAll("button").forEach(x=>x.classList.remove("activo"));
     b.classList.add("activo"); renderRiesgo();
+  }));
+  $("#selEstrategiaDetalle").querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+    estrategiaSel = b.dataset.e; renderDetalleEstrategia();
   }));
   document.querySelectorAll("#menu button").forEach(b =>
       b.addEventListener("click", () => cambiarVista(b.dataset.v)));

@@ -184,27 +184,32 @@
       </div>
       <div class="grid2">
         <div class="card">
-          <div class="cardHead"><div><h3>El veredicto, alternativa por alternativa</h3>
-            <div class="sub">Ganancia anual promedio, ganancia por unidad de susto (Sharpe) y peor caída de cada camino</div></div></div>
+          <div class="cardHead"><div><h3>El veredicto, camino por camino</h3>
+            <div class="sub">Ganancia anual promedio, ganancia por unidad de susto (Sharpe) y peor caída. En negrita, las tres estrategias.</div></div></div>
           <div class="marcoTabla"><table id="tablaVeredicto">
-            <thead><tr><th>Alternativa</th><th>Ganancia anual</th><th>Sharpe</th><th>Sortino</th><th>Peor caída</th></tr></thead>
+            <thead><tr><th>Camino</th><th>Ganancia anual</th><th>Sharpe</th><th>Sortino</th><th>Peor caída</th></tr></thead>
             <tbody></tbody>
           </table></div>
           <div class="notita" id="notaVeredicto"></div>
         </div>
         <div class="card">
-          <div class="cardHead"><div><h3>La estrategia, año por año</h3>
-            <div class="sub">Consistencia: cómo le fue al rebalanceo en cada año calendario</div></div></div>
+          <div class="cardHead">
+            <div><h3>Una estrategia por dentro</h3>
+            <div class="sub" id="subDetalle">Año por año y sus reglas</div></div>
+            <div class="toggle" id="selEstrategiaDetalle">
+              <button data-e="rebalanceo" class="activo">Rebalanceo</button><button data-e="momentum">Momentum</button><button data-e="reversion">Reversión</button>
+            </div>
+          </div>
           <div id="retornosAnio"></div>
-          <div class="tituloMini">Parámetros de la simulación</div>
+          <div class="tituloMini">Las reglas de esta estrategia</div>
           <div class="notita" id="paramsBacktest"></div>
         </div>
       </div>
       <div class="card">
-        <div class="cardHead"><div><h3>Operaciones simuladas</h3>
-          <div class="sub">Cada vez que la cartera se desvió más que la banda y el sistema rebalanceó (pagando comisiones)</div></div></div>
+        <div class="cardHead"><div><h3 id="tituloOps">Operaciones simuladas</h3>
+          <div class="sub" id="subOps">Cada decisión que tomó la estrategia seleccionada, con su costo</div></div></div>
         <div class="marcoTabla"><table id="tablaOps">
-          <thead><tr><th>Fecha</th><th>Desvío</th><th>% girado</th><th>Costo pagado</th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Qué hizo</th><th>Costo pagado</th></tr></thead>
           <tbody></tbody>
         </table></div>
       </div>
